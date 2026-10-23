@@ -61,6 +61,7 @@ splat-train.js      standalone WebGPU trainer / differentiable rasterizer
 examples/           small test assets (mesh, textured glTF, splats, point cloud)
 tests/              gradient check, forward render and train tests
 tools/              script that regenerates examples/
+AGENTS.md           handoff notes for coding agents and contributors
 ```
 
 ## Publishing with GitHub Pages
