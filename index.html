@@ -1,0 +1,2003 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Train and compare 3D Gaussian splatting, Gaussian point splatting, triangle splatting and convex splatting in the browser with Babylon.js and WebGPU.">
+<style>body{margin:0;font:14px system-ui,sans-serif}img{max-width:100%}[hidden]{display:none!important}</style>
+<title>Splat Lab</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: full-bleed WebGL stage on the left, a lab-notebook control rail on the right (source, then renderer); stacks on phones. Single dark look by design: splats read best on dark. */
+:root {
+  --bg: #0f1216;
+  --panel: #151a20;
+  --line: #252c35;
+  --fg: #e3e8ee;
+  --muted: #8a96a5;
+  --accent: #f0b04a;
+  --accent-ink: #1b1407;
+  --danger: #f07a6a;
+  --ui: "Familjen Grotesk", "Helvetica Neue", Arial, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+html, body { height: 100%; }
+[hidden] { display: none !important; }
+body { background: var(--bg); color: var(--fg); font-family: var(--ui); font-size: 14px; line-height: 1.5; }
+.app { height: 100%; display: grid; grid-template-columns: minmax(0, 1fr) 372px; }
+.stage { position: relative; min-width: 0; min-height: 0; background: var(--bg); }
+#c { width: 100%; height: 100%; display: block; outline: none; touch-action: none; }
+.hud { position: absolute; top: 12px; left: max(12px, env(safe-area-inset-left, 0px)); display: flex; flex-direction: column; gap: 2px;
+  font-family: var(--mono); font-size: 11.5px; color: var(--muted); pointer-events: none; font-variant-numeric: tabular-nums;
+  text-shadow: 0 0 4px var(--bg), 0 0 8px var(--bg); }
+.hud b { color: var(--fg); font-weight: 500; }
+.hint { position: absolute; bottom: 10px; left: max(12px, env(safe-area-inset-left, 0px)); right: 12px; font-size: 12px; color: var(--muted); pointer-events: none; text-shadow: 0 0 6px var(--bg); }
+.busy { position: absolute; top: 12px; right: max(12px, env(safe-area-inset-right, 0px)); font-family: var(--mono); font-size: 12px; color: var(--accent);
+  background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 5px 9px; }
+.drop { position: absolute; inset: 10px; border: 2px dashed var(--accent); border-radius: 8px; display: grid; place-items: center;
+  background: color-mix(in srgb, var(--bg) 70%, transparent); color: var(--fg); font-size: 16px; pointer-events: none; }
+.panel { background: var(--panel); border-left: 1px solid var(--line); overflow-y: auto; min-width: 0;
+  padding-block: 18px 24px; padding-left: max(18px, env(safe-area-inset-left, 0px)); padding-right: max(18px, env(safe-area-inset-right, 0px));
+  display: flex; flex-direction: column; gap: 18px; }
+.brand { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.brand h1 { margin: 0; font-size: 19px; font-weight: 600; letter-spacing: -0.01em; }
+.brand span { font-family: var(--mono); font-size: 10.5px; color: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; }
+.block { display: flex; flex-direction: column; gap: 10px; }
+.panel > .block + .block { border-top: 1px solid var(--line); padding-top: 16px; }
+.label { font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
+.tabs { display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.tabs.two { grid-template-columns: repeat(2, 1fr); }
+.tabs.four { grid-template-columns: repeat(4, 1fr); }
+#lossChart { width: 100%; height: 56px; display: block; }
+.tabs button { appearance: none; border: 0; background: transparent; color: var(--muted); font: 500 12.5px/1.2 var(--ui); padding: 9px 4px; cursor: pointer; }
+.tabs button + button { border-left: 1px solid var(--line); }
+.tabs button[aria-selected="true"] { background: var(--accent); color: var(--accent-ink); }
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, .dropzone:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tech h2 { margin: 0 0 2px; font-size: 16px; font-weight: 600; text-wrap: balance; }
+.cite { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.cite a { color: var(--accent); text-decoration: none; }
+.cite a:hover { text-decoration: underline; }
+.tech p { margin: 10px 0 0; color: color-mix(in srgb, var(--fg) 84%, var(--muted)); max-width: 62ch; }
+.formula { margin-top: 12px; font-family: var(--mono); font-size: 12px; color: var(--fg); background: var(--bg); border: 1px solid var(--line);
+  border-radius: 4px; padding: 8px 10px; overflow-x: auto; white-space: pre; }
+.controls { display: flex; flex-direction: column; gap: 14px; }
+.ctl { display: flex; flex-direction: column; gap: 5px; }
+.ctl .row { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.ctl label { font-size: 13px; }
+.ctl output { font-family: var(--mono); font-size: 12px; color: var(--accent); font-variant-numeric: tabular-nums; }
+.ctl small, .small { color: var(--muted); font-size: 11.5px; }
+input[type="range"] { width: 100%; accent-color: var(--accent); margin: 0; }
+.check { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
+.check input { accent-color: var(--accent); width: 15px; height: 15px; margin: 0; flex: none; }
+.seg { display: flex; gap: 6px; }
+.seg button, .btn { flex: 1; appearance: none; background: transparent; border: 1px solid var(--line); color: var(--muted); border-radius: 4px;
+  font: 500 12px/1 var(--mono); padding: 7px 0; cursor: pointer; }
+.seg button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-family: var(--ui); font-size: 13px; padding: 9px 12px; }
+.btn:disabled { opacity: 0.5; cursor: progress; }
+.rowbtns { display: flex; gap: 10px; align-items: center; }
+.rowbtns .btn { flex: none; padding-inline: 14px; }
+select { width: 100%; background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; font: 13px var(--ui); padding: 7px 8px; }
+textarea { width: 100%; box-sizing: border-box; min-height: 220px; resize: vertical; background: var(--bg); color: var(--fg); border: 1px solid var(--line);
+  border-radius: 4px; font: 11.5px/1.55 var(--mono); padding: 9px 10px; tab-size: 2; white-space: pre; overflow: auto; }
+.status { font-family: var(--mono); font-size: 11.5px; color: var(--muted); min-height: 1.5em; overflow-wrap: anywhere; white-space: pre-wrap; }
+.status.err { color: var(--danger); }
+.dropzone { position: relative; display: flex; flex-direction: column; gap: 4px; align-items: center; justify-content: center; text-align: center;
+  border: 1px dashed var(--muted); border-radius: 6px; padding: 18px 12px; cursor: pointer; }
+.dropzone strong { font-weight: 600; }
+.dropzone input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+details { font-size: 12px; color: var(--muted); }
+details summary { cursor: pointer; color: var(--fg); font-size: 12.5px; }
+details pre { font: 11px/1.55 var(--mono); color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 8px 10px; overflow-x: auto; margin: 8px 0 0; }
+.note { font-size: 12px; color: var(--muted); }
+.err-overlay { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; text-align: center; color: var(--fg); }
+@media (max-width: 800px) {
+  html, body { height: auto; }
+  .app { height: auto; grid-template-columns: minmax(0, 1fr); grid-template-rows: 58vh auto; }
+  .panel { border-left: 0; border-top: 1px solid var(--line); overflow: visible; }
+}
+</style>
+
+</head>
+<body>
+<div class="app">
+  <div class="stage" id="stage">
+    <canvas id="c"></canvas>
+    <div class="hud" id="hud"></div>
+    <div class="busy" id="busy" hidden></div>
+    <div class="drop" id="dropOverlay" hidden>Drop to convert into splats</div>
+    <div class="hint">Drag to orbit · scroll or pinch to zoom · right-drag to pan · drop a model file anywhere</div>
+  </div>
+  <aside class="panel">
+    <div class="brand"><h1>Splat Lab</h1><span>Babylon.js · WebGL2</span></div>
+
+    <section class="block">
+      <div class="label">Source</div>
+      <div class="tabs two" role="tablist" aria-label="Data source">
+        <button role="tab" id="src-sdf" data-src="sdf" aria-selected="true">Sculpt (SDF)</button>
+        <button role="tab" id="src-file" data-src="file" aria-selected="false">Model file</button>
+      </div>
+      <div id="sdfBox" class="block">
+        <select id="preset" aria-label="Sculpt preset"></select>
+        <textarea id="code" spellcheck="false" aria-label="Sculpt code"></textarea>
+        <div class="rowbtns">
+          <button class="btn primary" id="buildBtn" type="button">Build splats</button>
+          <span class="small">or Ctrl/⌘ + Enter</span>
+        </div>
+        <label class="check"><input type="checkbox" id="bakeSdf" checked> Bake soft shadows + ambient occlusion</label>
+        <details>
+          <summary>Sculpt language reference</summary>
+          <pre>// primitives (centered at origin)
+sphere(r)  box(x, y, z)  roundBox(x, y, z, r)
+torus(R, r)  cylinder(r, halfH)  capsule(halfH, r)
+octahedron(s)  gyroid(freq, wall)  // gyroid is infinite: intersect it
+
+// booleans (k > 0 gives a smooth blend of width k)
+union(a, b, ...)        a.add(b, k)
+subtract(a, b, ...)     a.sub(b, k)
+intersect(a, b, ...)    a.and(b, k)
+smoothUnion(k, a, b, ...)
+smoothSubtract(k, a, b)  smoothIntersect(k, a, b)
+
+// transforms and modifiers (chainable)
+.at(x, y, z)  .rot(degX, degY, degZ)  .scale(s)
+.twist(k)  .bend(k)  .mirror('xz')
+.repeat(sx, sy, sz, count)   // spacing 0 = no repeat on that axis
+.round(r)  .shell(t)  .displace(amp, freq)  .noise(amp, freq)
+
+// color
+.color('#e8a33d')  .color(r, g, b)
+.paint((x, y, z) => hsl(h, s, l))
+hsl(h, s, l)  mix(a, b, t)
+bounds(r)   // search radius, default 4
+
+// the last expression (or a return) is the shape.
+// Cut faces from subtract take the cutter's color.</pre>
+        </details>
+      </div>
+      <div id="fileBox" class="block" hidden>
+        <label class="dropzone" id="dropzone">
+          <input type="file" id="fileInput" multiple accept=".glb,.gltf,.bin,.obj,.mtl,.stl,.ply,.splat,.spz,.png,.jpg,.jpeg,.webp">
+          <strong>Choose or drop files</strong>
+          <span class="small">Meshes: .glb .gltf .obj .stl · Trained Gaussian splats: .ply .splat .spz · Point clouds: .ply</span>
+          <span class="small">For .gltf or .obj, select the .bin, .mtl and texture files along with it.</span>
+        </label>
+        <label class="check"><input type="checkbox" id="bakeMesh" checked> Bake simple lighting into meshes</label>
+        <label class="check"><input type="checkbox" id="flip"> Flip upside down</label>
+      </div>
+      <div class="status" id="status" role="status"></div>
+    </section>
+
+    <section class="block">
+      <div class="label">Renderer</div>
+      <div class="tabs four" role="tablist" aria-label="Rendering technique">
+        <button role="tab" id="tab-gs3d" data-mode="gs3d" aria-selected="true">3DGS</button>
+        <button role="tab" id="tab-points" data-mode="points" aria-selected="false">Points</button>
+        <button role="tab" id="tab-triangle" data-mode="triangle" aria-selected="false">Triangle</button>
+        <button role="tab" id="tab-convex" data-mode="convex" aria-selected="false">Convex</button>
+      </div>
+      <div class="tech" id="tech"></div>
+      <div class="controls" id="controls"></div>
+    </section>
+
+    <section class="block">
+      <div class="label">Train</div>
+      <p class="small" id="trainNote"></p>
+      <div class="controls" id="trainControls"></div>
+      <div class="status" id="trainStatus" role="status"></div>
+      <canvas id="lossChart" hidden aria-label="Training loss over steps"></canvas>
+    </section>
+
+    <section class="block note">
+      Every source becomes the same thing: oriented surface elements with a position, three axes, three radii, a color and an opacity. Untrained, each renderer just converts those elements into its own primitive. Training is what the papers actually do: it optimizes the primitives until renders from many cameras match the teacher. Training runs on WebGPU in your browser; files stay on your machine.
+    </section>
+  </aside>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/babylonjs@9.32.0/babylon.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/babylonjs-loaders@9.32.0/babylonjs.loaders.min.js"></script>
+<script src="splat-train.js"></script>
+<script>
+"use strict";
+const TAU = Math.PI * 2;
+const BG = [0.059, 0.071, 0.086];
+const $ = id => document.getElementById(id);
+
+/* =========================================================================
+   Math helpers
+   ========================================================================= */
+function rng(seed) { let a = seed >>> 0; return () => { a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+function norm3(v) { const l = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0] / l, v[1] / l, v[2] / l]; }
+function cross(a, b) { return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]; }
+function dot(a, b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+function hsl(h, s, l) { h = ((h % 1) + 1) % 1; const f = n => { const k = (n + h * 12) % 12; return l - s * Math.min(l, 1 - l) * Math.max(-1, Math.min(k - 3, 9 - k, 1)); }; return [f(0), f(8), f(4)]; }
+function mix(a, b, t) { if (Array.isArray(a)) return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]; return a + (b - a) * t; }
+const clamp = (x, a, b) => x < a ? a : x > b ? b : x;
+const tick = () => new Promise(r => setTimeout(r, 0));
+function tangentFrame(n, r) {
+  const a = Math.abs(n[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+  const t0 = norm3(cross(n, a)), b0 = cross(n, t0), ang = r() * TAU, c = Math.cos(ang), s = Math.sin(ang);
+  const t = [t0[0] * c + b0[0] * s, t0[1] * c + b0[1] * s, t0[2] * c + b0[2] * s];
+  return [t, cross(n, t)];
+}
+/* symmetric 3x3 eigen-decomposition (Jacobi); eigenvalues descending, eigenvectors as arrays */
+function eigSym3(a00, a01, a02, a11, a12, a22) {
+  const A = [[a00, a01, a02], [a01, a11, a12], [a02, a12, a22]], V = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+  for (let sweep = 0; sweep < 12; sweep++) {
+    if (Math.abs(A[0][1]) + Math.abs(A[0][2]) + Math.abs(A[1][2]) < 1e-14) break;
+    for (let p = 0; p < 2; p++) for (let q = p + 1; q < 3; q++) {
+      if (Math.abs(A[p][q]) < 1e-18) continue;
+      const th = (A[q][q] - A[p][p]) / (2 * A[p][q]);
+      const t = (th >= 0 ? 1 : -1) / (Math.abs(th) + Math.sqrt(th * th + 1)), c = 1 / Math.sqrt(t * t + 1), s = t * c;
+      for (let k = 0; k < 3; k++) { const akp = A[k][p], akq = A[k][q]; A[k][p] = c * akp - s * akq; A[k][q] = s * akp + c * akq; }
+      for (let k = 0; k < 3; k++) { const apk = A[p][k], aqk = A[q][k]; A[p][k] = c * apk - s * aqk; A[q][k] = s * apk + c * aqk; }
+      for (let k = 0; k < 3; k++) { const vkp = V[k][p], vkq = V[k][q]; V[k][p] = c * vkp - s * vkq; V[k][q] = s * vkp + c * vkq; }
+    }
+  }
+  const idx = [0, 1, 2].sort((i, j) => A[j][j] - A[i][i]);
+  return { w: idx.map(i => A[i][i]), v: idx.map(i => [V[0][i], V[1][i], V[2][i]]) };
+}
+
+/* =========================================================================
+   Shared splat-set model. Every source becomes n elements with:
+   pos[3], ax[9] = three orthonormal axes (a1, a2, a3; a3 is the thinnest,
+   i.e. the normal), sig[3] = Gaussian std-devs along them (descending),
+   col[3], op. Renderers only ever see this.
+   ========================================================================= */
+function makeSet(n, kind) {
+  return { n, kind, pos: new Float32Array(n * 3), ax: new Float32Array(n * 9), sig: new Float32Array(n * 3), col: new Float32Array(n * 3), op: new Float32Array(n) };
+}
+/* flat element for a surface sample with normal n and sample spacing s */
+function putSurfel(S, i, p, n, c, s, r) {
+  const [t, b] = tangentFrame(n, r);
+  S.pos[i * 3] = p[0]; S.pos[i * 3 + 1] = p[1]; S.pos[i * 3 + 2] = p[2];
+  S.ax.set(t, i * 9); S.ax.set(b, i * 9 + 3); S.ax.set(n, i * 9 + 6);
+  S.sig[i * 3] = 0.74 * s * (0.85 + 0.3 * r()); S.sig[i * 3 + 1] = 0.74 * s * (0.7 + 0.3 * r()); S.sig[i * 3 + 2] = 0.04 * s;
+  S.col[i * 3] = c[0]; S.col[i * 3 + 1] = c[1]; S.col[i * 3 + 2] = c[2];
+  S.op[i] = 0.86 + 0.13 * r();
+}
+function subsetSet(S, idx, grow) {
+  const T = makeSet(idx.length, S.kind);
+  for (let j = 0; j < idx.length; j++) {
+    const i = idx[j];
+    T.pos.set(S.pos.subarray(i * 3, i * 3 + 3), j * 3); T.ax.set(S.ax.subarray(i * 9, i * 9 + 9), j * 9);
+    T.sig[j * 3] = S.sig[i * 3] * grow; T.sig[j * 3 + 1] = S.sig[i * 3 + 1] * grow; T.sig[j * 3 + 2] = S.sig[i * 3 + 2];
+    T.col.set(S.col.subarray(i * 3, i * 3 + 3), j * 3); T.op[j] = S.op[i];
+  }
+  return T;
+}
+/* keep `budget` elements, favouring large opaque ones; grow survivors so total footprint is preserved */
+function budgetSet(S, budget) {
+  if (S.n <= budget) return S;
+  const r = rng(99), n = S.n, score = new Float32Array(n);
+  let all = 0;
+  for (let i = 0; i < n; i++) { const a = S.op[i] * S.sig[i * 3] * S.sig[i * 3 + 1]; all += a; score[i] = a * (0.35 + 0.65 * r()); }
+  const thr = Float32Array.from(score).sort()[n - budget];
+  const idx = []; let kept = 0;
+  for (let i = 0; i < n && idx.length < budget; i++) if (score[i] >= thr) { idx.push(i); kept += S.op[i] * S.sig[i * 3] * S.sig[i * 3 + 1]; }
+  return subsetSet(S, idx, Math.min(3, Math.sqrt(all / Math.max(kept, 1e-20))));
+}
+function flipSet(S) {
+  const T = subsetSet(S, Array.from({ length: S.n }, (_, i) => i), 1);
+  for (let i = 0; i < T.n; i++) {
+    T.pos[i * 3 + 1] *= -1; T.pos[i * 3 + 2] *= -1;
+    for (let k = 0; k < 3; k++) { T.ax[i * 9 + k * 3 + 1] *= -1; T.ax[i * 9 + k * 3 + 2] *= -1; }
+  }
+  return T;
+}
+
+/* =========================================================================
+   SOURCE 1: SDF sculpting language + surface sampler.
+   Everything lives in one self-contained function so the same code runs on
+   the main thread (to check the sculpt compiles) and inside Web Workers
+   (built from this function's source), which sample the surface in parallel.
+   Each Shape has d(x,y,z) -> signed distance and c(x,y,z) -> [r,g,b].
+   ========================================================================= */
+function sdfKernel() {
+  "use strict";
+  const TAU = Math.PI * 2;
+  const clamp = (x, a, b) => x < a ? a : x > b ? b : x;
+  function rng(seed) { let a = seed >>> 0; return () => { a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+  function norm3(v) { const l = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0] / l, v[1] / l, v[2] / l]; }
+  function cross(a, b) { return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]; }
+  function hsl(h, s, l) { h = ((h % 1) + 1) % 1; const f = n => { const k = (n + h * 12) % 12; return l - s * Math.min(l, 1 - l) * Math.max(-1, Math.min(k - 3, 9 - k, 1)); }; return [f(0), f(8), f(4)]; }
+  function mix(a, b, t) { if (Array.isArray(a)) return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]; return a + (b - a) * t; }
+  const LIGHT = norm3([0.5, 0.8, -0.35]);
+  function shadeColor(base, n, ao, sh) {
+    const diff = Math.max(0, n[0] * LIGHT[0] + n[1] * LIGHT[1] + n[2] * LIGHT[2]) * sh, sky = 0.5 + 0.5 * n[1];
+    const k = 0.3 * ao + 0.6 * diff + 0.22 * sky * ao;
+    return [Math.min(1.2, base[0] * k), Math.min(1.2, base[1] * k), Math.min(1.2, base[2] * k)];
+  }
+  const DEF = [0.78, 0.78, 0.8];
+  function parseColor(a) {
+    if (typeof a[0] === "string") {
+      let h = a[0].replace("#", ""); if (h.length === 3) h = h.split("").map(c => c + c).join("");
+      const v = parseInt(h, 16); return [(v >> 16 & 255) / 255, (v >> 8 & 255) / 255, (v & 255) / 255];
+    }
+    if (Array.isArray(a[0])) return a[0].slice(0, 3);
+    return [a[0], a[1] ?? a[0], a[2] ?? a[0]];
+  }
+  function hash3(x, y, z) { let h = Math.imul(x, 374761393) ^ Math.imul(y, 668265263) ^ Math.imul(z, 1440662683); h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967296 * 2 - 1; }
+  function vnoise(x, y, z) {
+    const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z), xf = x - xi, yf = y - yi, zf = z - zi;
+    const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf), w = zf * zf * (3 - 2 * zf), L = (a, b, t) => a + (b - a) * t;
+    return L(L(L(hash3(xi, yi, zi), hash3(xi + 1, yi, zi), u), L(hash3(xi, yi + 1, zi), hash3(xi + 1, yi + 1, zi), u), v),
+      L(L(hash3(xi, yi, zi + 1), hash3(xi + 1, yi, zi + 1), u), L(hash3(xi, yi + 1, zi + 1), hash3(xi + 1, yi + 1, zi + 1), u), v), w);
+  }
+  const fbm = (x, y, z) => vnoise(x, y, z) * 0.6 + vnoise(x * 2.1, y * 2.1, z * 2.1) * 0.28 + vnoise(x * 4.3, y * 4.3, z * 4.3) * 0.12;
+
+  class Shape {
+    constructor(d, c) { this.d = d; this.c = c || (() => DEF); }
+    color(...a) { const col = parseColor(a); return new Shape(this.d, () => col); }
+    paint(fn) { return new Shape(this.d, (x, y, z) => { const v = fn(x, y, z); return Array.isArray(v) ? v : parseColor([v]); }); }
+    at(tx = 0, ty = 0, tz = 0) { const d = this.d, c = this.c; return new Shape((x, y, z) => d(x - tx, y - ty, z - tz), (x, y, z) => c(x - tx, y - ty, z - tz)); }
+    rot(ax = 0, ay = 0, az = 0) {
+      const [a, b, g] = [ax, ay, az].map(v => v * Math.PI / 180);
+      const ca = Math.cos(a), sa = Math.sin(a), cb = Math.cos(b), sb = Math.sin(b), cg = Math.cos(g), sg = Math.sin(g);
+      const m = [cg * cb, cg * sb * sa - sg * ca, cg * sb * ca + sg * sa, sg * cb, sg * sb * sa + cg * ca, sg * sb * ca - cg * sa, -sb, cb * sa, cb * ca];
+      const T = f => (x, y, z) => f(m[0] * x + m[3] * y + m[6] * z, m[1] * x + m[4] * y + m[7] * z, m[2] * x + m[5] * y + m[8] * z);
+      return new Shape(T(this.d), T(this.c));
+    }
+    scale(s) { const d = this.d, c = this.c; return new Shape((x, y, z) => d(x / s, y / s, z / s) * s, (x, y, z) => c(x / s, y / s, z / s)); }
+    twist(k = 1) {
+      const T = (f, m) => (x, y, z) => { const a = k * y, ca = Math.cos(a), sa = Math.sin(a); return f(ca * x - sa * z, y, sa * x + ca * z) * m; };
+      return new Shape(T(this.d, 1 / (1 + Math.abs(k) * 1.2)), T(this.c, 1));
+    }
+    bend(k = 0.5) {
+      const T = (f, m) => (x, y, z) => { const a = k * x, ca = Math.cos(a), sa = Math.sin(a); return f(ca * x - sa * y, sa * x + ca * y, z) * m; };
+      return new Shape(T(this.d, 1 / (1 + Math.abs(k) * 1.2)), T(this.c, 1));
+    }
+    mirror(axes = "x") {
+      const mx = axes.includes("x"), my = axes.includes("y"), mz = axes.includes("z");
+      const T = f => (x, y, z) => f(mx ? Math.abs(x) : x, my ? Math.abs(y) : y, mz ? Math.abs(z) : z);
+      return new Shape(T(this.d), T(this.c));
+    }
+    repeat(sx = 1, sy = sx, sz = sx, count = Infinity) {
+      const md = (p, s) => s ? p - s * clamp(Math.round(p / s), -count, count) : p;
+      const T = f => (x, y, z) => f(md(x, sx), md(y, sy), md(z, sz));
+      return new Shape(T(this.d), T(this.c));
+    }
+    round(r = 0.05) { const d = this.d; return new Shape((x, y, z) => d(x, y, z) - r, this.c); }
+    shell(t = 0.05) { const d = this.d; return new Shape((x, y, z) => Math.abs(d(x, y, z)) - t, this.c); }
+    displace(a = 0.1, f = 4) {
+      const d = this.d, m = 1 / (1 + a * f * 1.8);
+      return new Shape((x, y, z) => (d(x, y, z) + a * Math.sin(f * x) * Math.sin(f * y) * Math.sin(f * z)) * m, this.c);
+    }
+    noise(a = 0.2, f = 2) {
+      const d = this.d, m = 1 / (1 + a * f * 3);
+      return new Shape((x, y, z) => (d(x, y, z) + a * fbm(x * f, y * f, z * f)) * m, this.c);
+    }
+    add(b, k = 0) { return k > 0 ? smoothUnion(k, this, b) : union(this, b); }
+    sub(b, k = 0) { return k > 0 ? smoothSubtract(k, this, b) : subtract(this, b); }
+    and(b, k = 0) { return k > 0 ? smoothIntersect(k, this, b) : intersect(this, b); }
+  }
+  const L2 = (a, b) => Math.sqrt(a * a + b * b);
+  const sphere = (r = 1) => new Shape((x, y, z) => Math.sqrt(x * x + y * y + z * z) - r);
+  const box = (bx = 1, by = bx, bz = bx) => new Shape((x, y, z) => {
+    const qx = Math.abs(x) - bx, qy = Math.abs(y) - by, qz = Math.abs(z) - bz;
+    return Math.hypot(Math.max(qx, 0), Math.max(qy, 0), Math.max(qz, 0)) + Math.min(Math.max(qx, qy, qz), 0);
+  });
+  const roundBox = (bx = 1, by = bx, bz = bx, r = 0.1) => box(bx - r, by - r, bz - r).round(r);
+  const torus = (R = 1, r = 0.3) => new Shape((x, y, z) => L2(L2(x, z) - R, y) - r);
+  const cylinder = (r = 0.5, h = 1) => new Shape((x, y, z) => {
+    const dx = L2(x, z) - r, dy = Math.abs(y) - h;
+    return Math.min(Math.max(dx, dy), 0) + L2(Math.max(dx, 0), Math.max(dy, 0));
+  });
+  const capsule = (h = 1, r = 0.3) => new Shape((x, y, z) => { const py = y - clamp(y, -h, h); return Math.sqrt(x * x + py * py + z * z) - r; });
+  const octahedron = (s = 1) => new Shape((x, y, z) => (Math.abs(x) + Math.abs(y) + Math.abs(z) - s) * 0.57735027);
+  const gyroid = (f = 3, t = 0.1) => new Shape((x, y, z) => {
+    const g = Math.sin(f * x) * Math.cos(f * y) + Math.sin(f * y) * Math.cos(f * z) + Math.sin(f * z) * Math.cos(f * x);
+    return Math.abs(g) / (f * 1.75) - t / 2;
+  });
+  function union(...s) {
+    return new Shape((x, y, z) => { let m = Infinity; for (const a of s) { const v = a.d(x, y, z); if (v < m) m = v; } return m; },
+      (x, y, z) => { let m = Infinity, best = s[0]; for (const a of s) { const v = a.d(x, y, z); if (v < m) { m = v; best = a; } } return best.c(x, y, z); });
+  }
+  function intersect(...s) {
+    return new Shape((x, y, z) => { let m = -Infinity; for (const a of s) { const v = a.d(x, y, z); if (v > m) m = v; } return m; },
+      (x, y, z) => { let m = -Infinity, best = s[0]; for (const a of s) { const v = a.d(x, y, z); if (v > m) { m = v; best = a; } } return best.c(x, y, z); });
+  }
+  function subtract(a, ...bs) {
+    const b = bs.length === 1 ? bs[0] : union(...bs);
+    return new Shape((x, y, z) => Math.max(a.d(x, y, z), -b.d(x, y, z)),
+      (x, y, z) => (-b.d(x, y, z) > a.d(x, y, z) ? b : a).c(x, y, z));   // cut faces take the cutter's color
+  }
+  /* polynomial smooth min/max (Quilez); kind 0 = union, 1 = subtract, 2 = intersect */
+  function smooth2(k, a, b, kind) {
+    const H = (da, db) => kind === 0 ? clamp(0.5 + 0.5 * (db - da) / k, 0, 1) : kind === 1 ? clamp(0.5 - 0.5 * (db + da) / k, 0, 1) : clamp(0.5 - 0.5 * (db - da) / k, 0, 1);
+    return new Shape((x, y, z) => {
+      const da = a.d(x, y, z), db = b.d(x, y, z), h = H(da, db);
+      if (kind === 0) return db + (da - db) * h - k * h * (1 - h);
+      if (kind === 1) return da + (-db - da) * h + k * h * (1 - h);
+      return db + (da - db) * h + k * h * (1 - h);
+    }, (x, y, z) => {
+      const h = H(a.d(x, y, z), b.d(x, y, z));
+      return kind === 1 ? mix(a.c(x, y, z), b.c(x, y, z), h) : mix(b.c(x, y, z), a.c(x, y, z), h);
+    });
+  }
+  const smoothUnion = (k, ...s) => s.reduce((acc, b) => smooth2(k, acc, b, 0));
+  const smoothSubtract = (k, a, ...bs) => smooth2(k, a, bs.length === 1 ? bs[0] : union(...bs), 1);
+  const smoothIntersect = (k, ...s) => s.reduce((acc, b) => smooth2(k, acc, b, 2));
+
+  const api = { sphere, box, roundBox, torus, cylinder, capsule, octahedron, gyroid, union, intersect, subtract, smoothUnion, smoothSubtract, smoothIntersect, hsl, mix };
+  function compile(code) {
+    const cfg = { bounds: 4 };
+    const scope = { ...api, bounds: r => { cfg.bounds = r; } };
+    const names = Object.keys(scope), vals = names.map(k => scope[k]);
+    let fn;
+    try { fn = new Function(...names, `"use strict"; return (${code}\n);`); }
+    catch (e) {
+      // a statement body whose final expression is the result
+      let body = code.trimEnd();
+      if (!/\breturn\b/.test(body)) {
+        const lines = body.split("\n"); let i = lines.length - 1;
+        while (i > 0 && /^\s*[.)\]]/.test(lines[i])) i--;
+        while (i > 0 && !/;\s*$|}\s*$/.test(lines[i - 1])) i--;
+        body = lines.slice(0, i).join("\n") + "\nreturn (" + lines.slice(i).join("\n").replace(/;\s*$/, "") + ");";
+      }
+      fn = new Function(...names, `"use strict";\n${body}`);
+    }
+    const shape = fn(...vals);
+    if (!(shape instanceof Shape)) throw new Error("The code has to end with a shape, for example sphere(1).sub(box(0.8)).");
+    return { shape, bounds: cfg.bounds };
+  }
+
+  /* Sample N points uniformly over the zero set:
+     coarse grid finds the surface box -> fine grid -> sign-change cells (each
+     holds ~equal area) -> random point in a random cell, Newton-projected onto
+     the surface -> normal from the gradient -> optional AO + soft shadow.
+     Ntotal sets the splat spacing when several workers share one surface. */
+  function sample(compiled, { N, Ntotal = N, seed = 4242, bake = true, progress = () => {} }) {
+    const f = compiled.shape.d, colorOf = compiled.shape.c, R = compiled.bounds;
+    const C = 44, hc = 2 * R / C, lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    for (let i = 0; i < C; i++) {
+      for (let j = 0; j < C; j++) for (let k = 0; k < C; k++) {
+        const x = -R + (i + 0.5) * hc, y = -R + (j + 0.5) * hc, z = -R + (k + 0.5) * hc;
+        if (Math.abs(f(x, y, z)) < hc * 0.9) { if (x < lo[0]) lo[0] = x; if (x > hi[0]) hi[0] = x; if (y < lo[1]) lo[1] = y; if (y > hi[1]) hi[1] = y; if (z < lo[2]) lo[2] = z; if (z > hi[2]) hi[2] = z; }
+      }
+      progress(0.05 * i / C);
+    }
+    if (lo[0] === Infinity) throw new Error(`No surface found inside ±${R}. Check that the shape isn't empty, or widen the search with bounds(r).`);
+    for (let a = 0; a < 3; a++) { lo[a] = Math.max(-R, lo[a] - hc); hi[a] = Math.min(R, hi[a] + hc); }
+    const ext = Math.max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]), h = ext / 128;
+    const nx = Math.max(2, Math.ceil((hi[0] - lo[0]) / h)), ny = Math.max(2, Math.ceil((hi[1] - lo[1]) / h)), nz = Math.max(2, Math.ceil((hi[2] - lo[2]) / h));
+    const G = new Float32Array((nx + 1) * (ny + 1) * (nz + 1)), gi = (i, j, k) => (i * (ny + 1) + j) * (nz + 1) + k;
+    for (let i = 0; i <= nx; i++) {
+      for (let j = 0; j <= ny; j++) for (let k = 0; k <= nz; k++) G[gi(i, j, k)] = f(lo[0] + i * h, lo[1] + j * h, lo[2] + k * h);
+      progress(0.05 + 0.25 * i / nx);
+    }
+    const cells = [];
+    for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) for (let k = 0; k < nz; k++) {
+      let neg = false, pos = false;
+      for (let c = 0; c < 8; c++) { if (G[gi(i + (c & 1), j + (c >> 1 & 1), k + (c >> 2 & 1))] < 0) neg = true; else pos = true; }
+      if (neg && pos) cells.push((i * ny + j) * nz + k);
+    }
+    if (!cells.length) throw new Error("The field never changes sign, so there is no surface. Try a larger shape or a smaller .shell() thickness.");
+    const s = Math.sqrt(cells.length * h * h / 1.5 / Ntotal);
+    const r = rng(seed), e = h * 0.05;
+    const P = new Float32Array(N * 3), AX = new Float32Array(N * 9), SG = new Float32Array(N * 3), CO = new Float32Array(N * 3), OP = new Float32Array(N);
+    const K4 = [[1, -1, -1], [-1, -1, 1], [-1, 1, -1], [1, 1, 1]];
+    const grad = (x, y, z) => { let gx = 0, gy = 0, gz = 0; for (const q of K4) { const v = f(x + q[0] * e, y + q[1] * e, z + q[2] * e); gx += q[0] * v; gy += q[1] * v; gz += q[2] * v; } return [gx / (4 * e), gy / (4 * e), gz / (4 * e)]; };
+    let got = 0, tries = 0;
+    while (got < N && tries < N * 12) {
+      tries++;
+      const cid = cells[(r() * cells.length) | 0], ci = Math.floor(cid / (ny * nz)), cj = Math.floor(cid / nz) % ny, ck = cid % nz;
+      let x = lo[0] + (ci + r()) * h, y = lo[1] + (cj + r()) * h, z = lo[2] + (ck + r()) * h, d = 1, g = null;
+      for (let it = 0; it < 6; it++) {
+        d = f(x, y, z); if (Math.abs(d) < h * 1e-3) break;
+        g = grad(x, y, z); const gg = g[0] * g[0] + g[1] * g[1] + g[2] * g[2]; if (gg < 1e-12) break;
+        x -= d * g[0] / gg; y -= d * g[1] / gg; z -= d * g[2] / gg;
+      }
+      if (Math.abs(f(x, y, z)) > h * 0.02) continue;
+      if (x < lo[0] + (ci - 1) * h || x > lo[0] + (ci + 2) * h || y < lo[1] + (cj - 1) * h || y > lo[1] + (cj + 2) * h || z < lo[2] + (ck - 1) * h || z > lo[2] + (ck + 2) * h) continue;
+      const n = norm3(grad(x, y, z));
+      let col = colorOf(x, y, z);
+      if (bake) {
+        let occ = 0, w = 1; const u = ext / 4;
+        for (let a = 1; a <= 5; a++) { const hh = (0.01 + 0.12 * a / 5) * u; occ += (hh - f(x + n[0] * hh, y + n[1] * hh, z + n[2] * hh)) / u * w; w *= 0.8; }
+        let sh = 1, t = h * 3;
+        for (let a = 0; a < 40 && t < ext * 1.5; a++) {
+          const v = f(x + n[0] * h * 0.5 + LIGHT[0] * t, y + n[1] * h * 0.5 + LIGHT[1] * t, z + n[2] * h * 0.5 + LIGHT[2] * t);
+          if (v < h * 0.05) { sh = 0; break; }
+          sh = Math.min(sh, 10 * v / t); t += clamp(v, h * 0.6, ext * 0.1);
+        }
+        col = shadeColor(col, n, clamp(1 - 2.2 * occ, 0, 1), clamp(sh, 0, 1));
+      }
+      // flat surface element: random tangent frame in the surface plane
+      const a0 = Math.abs(n[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0], t0 = norm3(cross(n, a0)), b0 = cross(n, t0), ang = r() * TAU, ca = Math.cos(ang), sa = Math.sin(ang);
+      const tt = [t0[0] * ca + b0[0] * sa, t0[1] * ca + b0[1] * sa, t0[2] * ca + b0[2] * sa], bb = cross(n, tt);
+      P[got * 3] = x; P[got * 3 + 1] = y; P[got * 3 + 2] = z;
+      AX.set(tt, got * 9); AX.set(bb, got * 9 + 3); AX.set(n, got * 9 + 6);
+      SG[got * 3] = 0.74 * s * (0.85 + 0.3 * r()); SG[got * 3 + 1] = 0.74 * s * (0.7 + 0.3 * r()); SG[got * 3 + 2] = 0.04 * s;
+      CO[got * 3] = col[0]; CO[got * 3 + 1] = col[1]; CO[got * 3 + 2] = col[2];
+      OP[got] = 0.86 + 0.13 * r();
+      got++;
+      if ((got & 1023) === 0) progress(0.3 + 0.7 * got / N);
+    }
+    return { n: got, kind: "surface", pos: P.slice(0, got * 3), ax: AX.slice(0, got * 9), sig: SG.slice(0, got * 3), col: CO.slice(0, got * 3), op: OP.slice(0, got) };
+  }
+  return { compile, sample, Shape };
+}
+const SDF = sdfKernel();
+const LIGHT = norm3([0.5, 0.8, -0.35]);
+function shadeColor(base, n, ao = 1, sh = 1) {
+  const diff = Math.max(0, dot(n, LIGHT)) * sh, sky = 0.5 + 0.5 * n[1];
+  const k = 0.3 * ao + 0.6 * diff + 0.22 * sky * ao;
+  return [Math.min(1.2, base[0] * k), Math.min(1.2, base[1] * k), Math.min(1.2, base[2] * k)];
+}
+
+/* parallel sampling: each worker samples its share of the same surface */
+const WORKER_SRC = `const K = (${sdfKernel.toString()})();
+onmessage = e => {
+  const { code, N, Ntotal, seed, bake } = e.data;
+  try {
+    const compiled = K.compile(code);
+    let last = 0;
+    const S = K.sample(compiled, { N, Ntotal, seed, bake, progress: f => { const t = Date.now(); if (t - last > 150) { last = t; postMessage({ progress: f }); } } });
+    postMessage({ set: S }, [S.pos.buffer, S.ax.buffer, S.sig.buffer, S.col.buffer, S.op.buffer]);
+  } catch (err) { postMessage({ error: err.message }); }
+};`;
+let workerURL = null;
+function mergeSets(parts) {
+  const n = parts.reduce((a, p) => a + p.n, 0), S = makeSet(n, "surface");
+  let o = 0;
+  for (const p of parts) { S.pos.set(p.pos, o * 3); S.ax.set(p.ax, o * 9); S.sig.set(p.sig, o * 3); S.col.set(p.col, o * 3); S.op.set(p.op, o); o += p.n; }
+  return S;
+}
+function sampleSDF(code, N, bake, progress, isStale) {
+  const W = Math.max(1, Math.min(8, navigator.hardwareConcurrency || 4, Math.ceil(N / 4000)));
+  return new Promise((resolve, reject) => {
+    let workers = [];
+    try {
+      workerURL = workerURL || URL.createObjectURL(new Blob([WORKER_SRC], { type: "text/javascript" }));
+      for (let i = 0; i < W; i++) workers.push(new Worker(workerURL));
+    } catch (e) {
+      // no workers available: sample on the main thread
+      workers.forEach(w => w.terminate());
+      setTimeout(() => { try { resolve(SDF.sample(SDF.compile(code), { N, bake })); } catch (err) { reject(err); } }, 20);
+      return;
+    }
+    const parts = new Array(W), prog = new Array(W).fill(0);
+    let done = 0, finished = false;
+    const finish = (err, val) => { if (finished) return; finished = true; clearInterval(poll); workers.forEach(w => w.terminate()); err ? reject(err) : resolve(val); };
+    const poll = setInterval(() => { if (isStale()) finish(new Error("stale")); }, 100);
+    workers.forEach((w, i) => {
+      const n = Math.floor(N / W) + (i < N % W ? 1 : 0);
+      w.onmessage = e => {
+        const d = e.data;
+        if (d.progress !== undefined) { prog[i] = d.progress; progress(`Sampling surface on ${W} threads… ${Math.round(prog.reduce((a, b) => a + b, 0) / W * 100)}%`); return; }
+        if (d.error) return finish(new Error(d.error));
+        parts[i] = d.set;
+        if (++done === W) finish(null, mergeSets(parts));
+      };
+      w.onerror = ev => finish(new Error(ev.message || "A sampling worker failed."));
+      w.postMessage({ code, N: n, Ntotal: N, seed: 4242 + i * 7919, bake });
+    });
+  });
+}
+
+const PRESETS = {
+  "Gyroid orb": `// a gyroid lattice clipped by a sphere, fused onto a blue core
+const lattice = sphere(1.7)
+  .and(gyroid(5.2, 0.11))
+  .paint((x, y, z) => hsl(0.06 + y * 0.06, 0.85, 0.55));
+const core = sphere(0.95).color('#3d7be0');
+const base = cylinder(1.3, 0.09).at(0, -1.85, 0).color('#9aa3ad');
+union(smoothUnion(0.12, lattice, core), base)`,
+  "Machined part": `// classic CSG: (cube ∩ sphere) minus three crossed cylinders
+const body = box(1.25).and(sphere(1.68)).color('#d9a441');
+const holes = union(
+  cylinder(0.62, 2.5),
+  cylinder(0.62, 2.5).rot(90, 0, 0),
+  cylinder(0.62, 2.5).rot(0, 0, 90)
+).color('#c2410c');
+body.sub(holes).rot(18, 30, 0)`,
+  "Menger sponge": `// three levels of cross-shaped cuts, repeated at shrinking periods
+let s = box(1.5).color('#e7e2d6');
+let size = 3;
+for (let i = 0; i < 3; i++) {
+  const w = size / 6, big = 9;
+  const cross = union(box(big, w, w), box(w, big, w), box(w, w, big))
+    .repeat(size, size, size)
+    .color(hsl(0.58 + i * 0.12, 0.7, 0.5));
+  s = s.sub(cross);
+  size /= 3;
+}
+s.rot(25, 35, 0)`,
+  "Lava lamp": `// spheres melted together; colors blend across the seams
+const blobs = [];
+for (let i = 0; i < 9; i++) {
+  const a = i * 2.4, r = 0.35 + 0.25 * Math.sin(i * 1.7) ** 2;
+  blobs.push(sphere(r + 0.15)
+    .at(Math.cos(a) * 0.55, -1.3 + i * 0.32, Math.sin(a) * 0.55)
+    .color(hsl(0.95 + i * 0.03, 0.85, 0.55)));
+}
+const glass = capsule(1.3, 0.95).shell(0.03)
+  .and(box(2, 1.55, 2))
+  .sub(box(2, 0.3, 2).at(0, 1.6, 0))
+  .color('#8fb9c9');
+union(smoothUnion(0.45, ...blobs), glass)`,
+  "Twisted column": `// a twisted rounded box with a lattice of holes carved through it
+const column = roundBox(0.62, 2, 0.62, 0.12).twist(0.85)
+  .paint((x, y, z) => hsl(0.52 + y * 0.05, 0.6, 0.5));
+const holes = sphere(0.19).repeat(0.42, 0.42, 0.42).color('#f0b04a');
+const plinth = roundBox(1, 0.18, 1, 0.05).at(0, -2.1, 0).color('#5b6470');
+union(column.sub(holes), plinth)`,
+  "Asteroid": `// noisy rock with smooth-cut craters and a ring
+const rock = sphere(1.35).noise(0.35, 1.6)
+  .paint((x, y, z) => mix([0.42, 0.36, 0.32], [0.75, 0.62, 0.5], 0.5 + 0.5 * Math.sin(y * 3 + x)));
+const craters = union(
+  sphere(0.45).at(1.25, 0.4, 0.2), sphere(0.32).at(-0.4, 1.2, 0.6),
+  sphere(0.38).at(-0.9, -0.6, 1.0), sphere(0.25).at(0.3, -0.5, 1.3)
+).color('#3b302b');
+const ring = torus(2.3, 0.05).rot(14, 0, 8).color('#cfd8e3');
+union(rock.sub(craters, 0.12), ring)`,
+};
+
+/* =========================================================================
+   SOURCE 2: meshes (glTF / GLB / OBJ / STL / mesh PLY), parsed by Babylon's
+   loaders, flattened to a world-space triangle soup, then area-weighted
+   sampled. Color = material color × texture texel × vertex color.
+   ========================================================================= */
+async function textureInfo(tex) {
+  if (!tex) return null;
+  try {
+    await new Promise(res => BABYLON.Texture.WhenAllReady([tex], res));
+    const sz = tex.getSize(); let data = await tex.readPixels();
+    if (!data || !sz.width) return null;
+    if (data instanceof Float32Array) { const u = new Uint8Array(data.length); for (let i = 0; i < data.length; i++) u[i] = clamp(Math.round(data[i] * 255), 0, 255); data = u; }
+    else if (!(data instanceof Uint8Array)) data = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    return { w: sz.width, h: sz.height, data, uS: tex.uScale || 1, vS: tex.vScale || 1, uO: tex.uOffset || 0, vO: tex.vOffset || 0 };
+  } catch (e) { return null; }
+}
+const toGamma = c => [Math.pow(c[0], 1 / 2.2), Math.pow(c[1], 1 / 2.2), Math.pow(c[2], 1 / 2.2)];
+async function materialInfo(mat) {
+  if (!mat) return { color: [0.8, 0.8, 0.8], alpha: 1, tex: null, linear: false };
+  if (mat.albedoColor !== undefined) return { color: toGamma(mat.albedoColor.asArray()), alpha: mat.alpha ?? 1, tex: await textureInfo(mat.albedoTexture), linear: true };
+  if (mat.baseColor && mat.baseColor.asArray) return { color: toGamma(mat.baseColor.asArray()), alpha: mat.alpha ?? 1, tex: await textureInfo(mat.baseColorTexture || mat.albedoTexture), linear: true };
+  if (mat.diffuseColor !== undefined) return { color: mat.diffuseColor.asArray(), alpha: mat.alpha ?? 1, tex: await textureInfo(mat.diffuseTexture), linear: false };
+  return { color: [0.8, 0.8, 0.8], alpha: mat.alpha ?? 1, tex: null, linear: false };
+}
+function texSample(t, u, v) {
+  u = u * t.uS + t.uO; v = v * t.vS + t.vO; u -= Math.floor(u); v -= Math.floor(v);
+  const x = Math.min(t.w - 1, (u * t.w) | 0), y = Math.min(t.h - 1, (v * t.h) | 0), o = (y * t.w + x) * 4;
+  return [t.data[o] / 255, t.data[o + 1] / 255, t.data[o + 2] / 255, t.data[o + 3] / 255];
+}
+async function collectTriangles(meshes) {
+  const P = [], N = [], UV = [], VC = [], M = [], mats = [], matIdx = new Map();
+  for (const mesh of meshes) {
+    const idx = mesh.getIndices(), pos = mesh.getVerticesData("position");
+    if (!pos || !idx || !idx.length) continue;
+    mesh.computeWorldMatrix(true);
+    const m = mesh.getWorldMatrix().m;
+    const nrm = mesh.getVerticesData("normal"), uvs = mesh.getVerticesData("uv"), vcol = mesh.getVerticesData("color");
+    const vcs = vcol ? Math.round(vcol.length / (pos.length / 3)) : 0;
+    const subs = mesh.subMeshes && mesh.subMeshes.length ? mesh.subMeshes : [{ indexStart: 0, indexCount: idx.length, getMaterial: () => mesh.material }];
+    for (const sm of subs) {
+      const mat = sm.getMaterial ? sm.getMaterial() : mesh.material;
+      if (!matIdx.has(mat)) { matIdx.set(mat, mats.length); mats.push(await materialInfo(mat)); }
+      const mi = matIdx.get(mat), linear = mats[mi].linear;
+      for (let t = sm.indexStart; t + 2 < sm.indexStart + sm.indexCount; t += 3) {
+        for (let c = 0; c < 3; c++) {
+          const vi = idx[t + c], x = pos[vi * 3], y = pos[vi * 3 + 1], z = pos[vi * 3 + 2];
+          P.push(x * m[0] + y * m[4] + z * m[8] + m[12], x * m[1] + y * m[5] + z * m[9] + m[13], x * m[2] + y * m[6] + z * m[10] + m[14]);
+          if (nrm) { const a = nrm[vi * 3], b = nrm[vi * 3 + 1], d = nrm[vi * 3 + 2]; N.push(a * m[0] + b * m[4] + d * m[8], a * m[1] + b * m[5] + d * m[9], a * m[2] + b * m[6] + d * m[10]); }
+          else N.push(0, 0, 0);
+          UV.push(uvs ? uvs[vi * 2] : 0, uvs ? uvs[vi * 2 + 1] : 0);
+          if (vcs >= 3) { const cc = [vcol[vi * vcs], vcol[vi * vcs + 1], vcol[vi * vcs + 2]]; VC.push(...(linear ? toGamma(cc) : cc)); } else VC.push(1, 1, 1);
+        }
+        M.push(mi);
+      }
+    }
+  }
+  const soup = { P: Float32Array.from(P), N: Float32Array.from(N), UV: Float32Array.from(UV), VC: Float32Array.from(VC), M: Uint32Array.from(M), mats, tris: M.length };
+  const cdf = new Float64Array(soup.tris); let tot = 0;
+  for (let i = 0; i < soup.tris; i++) {
+    const p = soup.P, o = i * 9;
+    const ux = p[o + 3] - p[o], uy = p[o + 4] - p[o + 1], uz = p[o + 5] - p[o + 2], vx = p[o + 6] - p[o], vy = p[o + 7] - p[o + 1], vz = p[o + 8] - p[o + 2];
+    tot += 0.5 * Math.hypot(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx); cdf[i] = tot;
+  }
+  soup.cdf = cdf; soup.area = tot;
+  return soup;
+}
+function sampleMesh(soup, N, bake) {
+  const r = rng(77), S = makeSet(N, "surface"), s = Math.sqrt(soup.area / N), P = soup.P;
+  for (let i = 0; i < N; i++) {
+    const target = r() * soup.area; let a = 0, b = soup.tris - 1;
+    while (a < b) { const m = (a + b) >> 1; if (soup.cdf[m] < target) a = m + 1; else b = m; }
+    const t = a, o = t * 9;
+    let u = r(), v = r(); if (u + v > 1) { u = 1 - u; v = 1 - v; } const w = 1 - u - v;
+    const p = [0, 1, 2].map(k => P[o + k] * w + P[o + 3 + k] * u + P[o + 6 + k] * v);
+    let n = [0, 1, 2].map(k => soup.N[o + k] * w + soup.N[o + 3 + k] * u + soup.N[o + 6 + k] * v);
+    if (Math.hypot(n[0], n[1], n[2]) < 1e-8) n = cross([P[o + 3] - P[o], P[o + 4] - P[o + 1], P[o + 5] - P[o + 2]], [P[o + 6] - P[o], P[o + 7] - P[o + 1], P[o + 8] - P[o + 2]]);
+    n = norm3(n);
+    const mat = soup.mats[soup.M[t]];
+    let c = mat.color.slice(), alpha = mat.alpha;
+    if (mat.tex) {
+      const uu = soup.UV[t * 6] * w + soup.UV[t * 6 + 2] * u + soup.UV[t * 6 + 4] * v, vv = soup.UV[t * 6 + 1] * w + soup.UV[t * 6 + 3] * u + soup.UV[t * 6 + 5] * v;
+      const tc = texSample(mat.tex, uu, vv); c = [c[0] * tc[0], c[1] * tc[1], c[2] * tc[2]]; alpha *= tc[3];
+    }
+    c = [0, 1, 2].map(k => c[k] * (soup.VC[o + k] * w + soup.VC[o + 3 + k] * u + soup.VC[o + 6 + k] * v));
+    if (bake) c = shadeColor(c, n, 1, 1);
+    putSurfel(S, i, p, n, c, s, r);
+    S.op[i] *= clamp(alpha, 0.05, 1);
+  }
+  return S;
+}
+
+/* =========================================================================
+   SOURCE 3: trained Gaussian splats (.ply / .splat / .spz). Babylon's splat
+   loader parses them; with keepInRam its splatsData holds 32 bytes per splat:
+   position f32×3, scale f32×3 (linear), RGBA u8×4, rotation u8×4 (w,x,y,z).
+   ========================================================================= */
+function gaussiansFromSplatMesh(mesh) {
+  const buf = mesh.splatsData; if (!buf) return null;
+  const ab = buf.buffer ? buf.buffer : buf, off = buf.byteOffset || 0, n = Math.floor((buf.byteLength) / 32);
+  const f = new Float32Array(ab, off, n * 8), u = new Uint8Array(ab, off, n * 32);
+  mesh.computeWorldMatrix(true); const m = mesh.getWorldMatrix().m;
+  const S = makeSet(n, "gaussian");
+  for (let i = 0; i < n; i++) {
+    const x = f[i * 8], y = f[i * 8 + 1], z = f[i * 8 + 2];
+    S.pos[i * 3] = x * m[0] + y * m[4] + z * m[8] + m[12]; S.pos[i * 3 + 1] = x * m[1] + y * m[5] + z * m[9] + m[13]; S.pos[i * 3 + 2] = x * m[2] + y * m[6] + z * m[10] + m[14];
+    const sc = [f[i * 8 + 3], f[i * 8 + 4], f[i * 8 + 5]];
+    let qw = (u[i * 32 + 28] - 128) / 128, qx = (u[i * 32 + 29] - 128) / 128, qy = (u[i * 32 + 30] - 128) / 128, qz = (u[i * 32 + 31] - 128) / 128;
+    const ql = Math.hypot(qw, qx, qy, qz) || 1; qw /= ql; qx /= ql; qy /= ql; qz /= ql;
+    const cols = [
+      [1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy + qw * qz), 2 * (qx * qz - qw * qy)],
+      [2 * (qx * qy - qw * qz), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz + qw * qx)],
+      [2 * (qx * qz + qw * qy), 2 * (qy * qz - qw * qx), 1 - 2 * (qx * qx + qy * qy)],
+    ];
+    const axes = cols.map((c, k) => {
+      const wv = [c[0] * m[0] + c[1] * m[4] + c[2] * m[8], c[0] * m[1] + c[1] * m[5] + c[2] * m[9], c[0] * m[2] + c[1] * m[6] + c[2] * m[10]];
+      const len = Math.hypot(wv[0], wv[1], wv[2]) || 1;
+      return { v: [wv[0] / len, wv[1] / len, wv[2] / len], s: sc[k] * len };
+    }).sort((a, b) => b.s - a.s);
+    for (let k = 0; k < 3; k++) { S.ax.set(axes[k].v, i * 9 + k * 3); S.sig[i * 3 + k] = axes[k].s; }
+    S.col[i * 3] = u[i * 32 + 24] / 255; S.col[i * 3 + 1] = u[i * 32 + 25] / 255; S.col[i * 3 + 2] = u[i * 32 + 26] / 255;
+    S.op[i] = u[i * 32 + 27] / 255;
+  }
+  return S;
+}
+
+/* =========================================================================
+   SOURCE 4: point clouds. Spatial hash + 10 nearest neighbours; PCA of the
+   neighbourhood gives the normal (smallest eigenvector) and splat size/shape.
+   ========================================================================= */
+async function pointsToSet(P, Ccol, budget, progress) {
+  const total = P.length / 3, r = rng(5);
+  let ids;
+  if (total > budget) { ids = new Uint32Array(budget); const step = total / budget; for (let i = 0; i < budget; i++) ids[i] = Math.min(total - 1, Math.floor(i * step + r() * step)); }
+  else ids = Uint32Array.from({ length: total }, (_, i) => i);
+  const n = ids.length, X = new Float32Array(n * 3), lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (let j = 0; j < n; j++) for (let a = 0; a < 3; a++) { const v = P[ids[j] * 3 + a]; X[j * 3 + a] = v; if (v < lo[a]) lo[a] = v; if (v > hi[a]) hi[a] = v; }
+  const diag = Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) || 1, cell = diag / Math.sqrt(n) * 1.6;
+  const TB = 1 << 20, head = new Int32Array(TB).fill(-1), next = new Int32Array(n), cx = new Int32Array(n), cy = new Int32Array(n), cz = new Int32Array(n);
+  const H = (a, b, c) => ((Math.imul(a, 73856093) ^ Math.imul(b, 19349663) ^ Math.imul(c, 83492791)) >>> 0) & (TB - 1);
+  for (let j = 0; j < n; j++) {
+    cx[j] = Math.floor((X[j * 3] - lo[0]) / cell); cy[j] = Math.floor((X[j * 3 + 1] - lo[1]) / cell); cz[j] = Math.floor((X[j * 3 + 2] - lo[2]) / cell);
+    const hh = H(cx[j], cy[j], cz[j]); next[j] = head[hh]; head[hh] = j;
+  }
+  const S = makeSet(n, "surface"), K = 10, kd = new Float64Array(K), ki = new Int32Array(K);
+  let t0 = performance.now();
+  for (let j = 0; j < n; j++) {
+    let cnt = 0;
+    const px = X[j * 3], py = X[j * 3 + 1], pz = X[j * 3 + 2];
+    for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) for (let c = -1; c <= 1; c++) {
+      const A = cx[j] + a, B = cy[j] + b, Cc = cz[j] + c;
+      for (let q = head[H(A, B, Cc)]; q !== -1; q = next[q]) {
+        if (q === j || cx[q] !== A || cy[q] !== B || cz[q] !== Cc) continue;
+        const dx = X[q * 3] - px, dy = X[q * 3 + 1] - py, dz = X[q * 3 + 2] - pz, d2 = dx * dx + dy * dy + dz * dz;
+        if (cnt < K || d2 < kd[K - 1]) {
+          let s = cnt < K ? cnt++ : K - 1;
+          while (s > 0 && kd[s - 1] > d2) { kd[s] = kd[s - 1]; ki[s] = ki[s - 1]; s--; }
+          kd[s] = d2; ki[s] = q;
+        }
+      }
+    }
+    const src = ids[j], col = Ccol ? [Ccol[src * 3], Ccol[src * 3 + 1], Ccol[src * 3 + 2]] : [0.8, 0.8, 0.8];
+    if (cnt >= 3) {
+      let mx = px, my = py, mz = pz;
+      for (let q = 0; q < cnt; q++) { mx += X[ki[q] * 3]; my += X[ki[q] * 3 + 1]; mz += X[ki[q] * 3 + 2]; }
+      mx /= cnt + 1; my /= cnt + 1; mz /= cnt + 1;
+      let c00 = 0, c01 = 0, c02 = 0, c11 = 0, c12 = 0, c22 = 0;
+      const acc = (x, y, z) => { const a = x - mx, b = y - my, c = z - mz; c00 += a * a; c01 += a * b; c02 += a * c; c11 += b * b; c12 += b * c; c22 += c * c; };
+      acc(px, py, pz); for (let q = 0; q < cnt; q++) acc(X[ki[q] * 3], X[ki[q] * 3 + 1], X[ki[q] * 3 + 2]);
+      const E = eigSym3(c00, c01, c02, c11, c12, c22), spacing = Math.sqrt(kd[Math.min(cnt, 6) - 1]);
+      S.pos[j * 3] = px; S.pos[j * 3 + 1] = py; S.pos[j * 3 + 2] = pz;
+      S.ax.set(E.v[0], j * 9); S.ax.set(E.v[1], j * 9 + 3); S.ax.set(E.v[2], j * 9 + 6);
+      S.sig[j * 3] = spacing * 0.6; S.sig[j * 3 + 1] = spacing * 0.6 * clamp(Math.sqrt(E.w[1] / Math.max(E.w[0], 1e-20)) * 1.3, 0.5, 1); S.sig[j * 3 + 2] = spacing * 0.04;
+      S.col.set(col, j * 3); S.op[j] = 0.92;
+    } else putSurfel(S, j, [px, py, pz], norm3([r() - 0.5, r() - 0.5, r() - 0.5]), col, cell * 0.4, r);
+    if ((j & 4095) === 0 && performance.now() - t0 > 40) { progress("Estimating normals… " + Math.round(j / n * 100) + "%"); await tick(); t0 = performance.now(); }
+  }
+  return S;
+}
+
+/* =========================================================================
+   Babylon setup. WebGPU engine when available (needed for Babylon's native
+   point splatting); WebGL2 otherwise. On WebGPU every custom shader here is
+   WGSL, so Babylon never has to fetch its GLSL converter.
+   ========================================================================= */
+const canvas = $("c");
+let engine, scene, camera, isGPU = false;
+async function initEngine() {
+  const forceGL = /webgl/.test(location.search);
+  if (navigator.gpu && !forceGL) {
+    try {
+      const e = new BABYLON.WebGPUEngine(canvas, { antialias: false, stencil: false, adaptToDeviceRatio: false });
+      await e.initAsync();
+      engine = e; isGPU = true;
+    } catch (err) { console.warn("WebGPU engine failed, using WebGL2", err); }
+  }
+  if (!engine) engine = new BABYLON.Engine(canvas, false, { antialias: false, stencil: false, preserveDrawingBuffer: false }, false);
+  scene = new BABYLON.Scene(engine);
+  scene.clearColor = new BABYLON.Color4(BG[0], BG[1], BG[2], 1);
+  scene.skipPointerMovePicking = true;
+  camera = new BABYLON.ArcRotateCamera("cam", -Math.PI / 2 + 0.75, 1.13, 7.6, new BABYLON.Vector3(0, 0, 0), scene);
+  camera.minZ = 0.05; camera.maxZ = 1000; camera.wheelDeltaPercentage = 0.02; camera.pinchDeltaPercentage = 0.004;
+  camera.attachControl(canvas, true);
+}
+const LANG = () => isGPU ? BABYLON.ShaderLanguage.WGSL : BABYLON.ShaderLanguage.GLSL;
+function shaderMat(name, opts) { return new BABYLON.ShaderMaterial(name + "Mat", scene, name, { ...opts, shaderLanguage: LANG() }); }
+function camBasis() { const f = camera.getTarget().subtract(camera.position).normalize(); return { pos: camera.position, fwd: f }; }
+function robustBounds(S) {
+  const r = rng(3), n = S.n, m = Math.min(n, 20000), xs = [[], [], []];
+  for (let j = 0; j < m; j++) { const i = (r() * n) | 0; for (let a = 0; a < 3; a++) xs[a].push(S.pos[i * 3 + a]); }
+  const lo = [], hi = [];
+  for (let a = 0; a < 3; a++) { xs[a].sort((p, q) => p - q); lo.push(xs[a][Math.floor(m * 0.02)]); hi.push(xs[a][Math.floor(m * 0.98)]); }
+  const c = lo.map((v, a) => (v + hi[a]) / 2), ext = Math.max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) || 1;
+  return { center: c, ext, radius: 0.5 * Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) || 1 };
+}
+function frameSet(S) {
+  const { center: c, ext } = robustBounds(S);
+  camera.setTarget(new BABYLON.Vector3(c[0], c[1], c[2]));
+  camera.radius = ext * 2.05; camera.minZ = ext * 0.004; camera.maxZ = ext * 200;
+  camera.lowerRadiusLimit = ext * 0.02; camera.upperRadiusLimit = ext * 20; camera.panningSensibility = 2500 / ext;
+}
+function revealColor(r) { return hsl(r(), 0.65, 0.58); }
+function depthOrder(keys, n, order, buckets) {
+  let lo = Infinity, hi = -Infinity;
+  for (let i = 0; i < n; i++) { const k = keys[i]; if (k < lo) lo = k; if (k > hi) hi = k; }
+  const NB = buckets.length - 1, sc = hi > lo ? NB / (hi - lo) : 0;
+  buckets.fill(0);
+  if (!depthOrder.bk || depthOrder.bk.length < n) depthOrder.bk = new Uint16Array(n);
+  const bk = depthOrder.bk;
+  for (let i = 0; i < n; i++) { const b = ((hi - keys[i]) * sc) | 0; bk[i] = b; buckets[b + 1]++; }
+  for (let b = 1; b <= NB; b++) buckets[b] += buckets[b - 1];
+  for (let i = 0; i < n; i++) order[buckets[bk[i]]++] = i;
+}
+/* point on element i's ellipse at angle a, f1/f2 in std-devs, lifted along the normal */
+function ellipsePt(S, i, a, f1, f2, lift, out) {
+  const ca = Math.cos(a) * f1 * S.sig[i * 3], sa = Math.sin(a) * f2 * S.sig[i * 3 + 1], l = lift * S.sig[i * 3];
+  for (let k = 0; k < 3; k++) out[k] = S.pos[i * 3 + k] + ca * S.ax[i * 9 + k] + sa * S.ax[i * 9 + 3 + k] + l * S.ax[i * 9 + 6 + k];
+  return out;
+}
+
+/* =========================================================================
+   RENDERER: TRIANGLE SPLATTING (Held et al. 2025)
+   Window I(p) = ReLU(phi(p)/phi(s))^sigma evaluated in screen space, exactly
+   as the trainer does: every vertex carries all three corners, the vertex
+   shader projects them, and the fragment shader takes the signed distance to
+   the nearest edge over the inradius. Sorted back to front, alpha-blended.
+   ========================================================================= */
+BABYLON.Effect.ShadersStore.triVertexShader = `
+precision highp float;
+attribute vec3 position; attribute vec3 pa; attribute vec3 pb; attribute vec3 pc; attribute vec4 color;
+uniform mat4 viewProjection; uniform vec2 res;
+varying vec4 vColor; varying vec2 vA; varying vec2 vB; varying vec2 vC;
+vec2 toPx(vec3 p) { vec4 c = viewProjection * vec4(p, 1.0); return (c.xy / c.w * 0.5 + 0.5) * res; }
+void main() {
+  vec4 ca = viewProjection * vec4(pa, 1.0), cb = viewProjection * vec4(pb, 1.0), cc = viewProjection * vec4(pc, 1.0);
+  if (min(min(ca.w, cb.w), cc.w) < 1e-4) { gl_Position = vec4(0.0, 0.0, 2.0, 1.0); return; }
+  gl_Position = viewProjection * vec4(position, 1.0);
+  vColor = color; vA = toPx(pa); vB = toPx(pb); vC = toPx(pc);
+}`;
+BABYLON.Effect.ShadersStore.triFragmentShader = `
+precision highp float;
+varying vec4 vColor; varying vec2 vA; varying vec2 vB; varying vec2 vC;
+uniform float sigma; uniform float opacityScale;
+float cr2(vec2 a, vec2 b) { return a.x * b.y - a.y * b.x; }
+void main() {
+  vec2 p = gl_FragCoord.xy;
+  float c = cr2(vB - vA, vC - vA), s = sign(c);
+  float l0 = length(vB - vA), l1 = length(vC - vB), l2 = length(vA - vC);
+  float r = abs(c) / (l0 + l1 + l2);
+  float m = min(min(s * cr2(vB - vA, p - vA) / l0, s * cr2(vC - vB, p - vB) / l1), s * cr2(vA - vC, p - vC) / l2);
+  if (m <= 0.0 || r <= 0.0) discard;
+  float a = min(0.99, clamp(vColor.a * opacityScale, 0.0, 1.0) * pow(m / r, sigma));
+  if (a < 1.0 / 255.0) discard;
+  gl_FragColor = vec4(vColor.rgb, a);
+}`;
+BABYLON.ShaderStore.ShadersStoreWGSL.triVertexShader = `
+attribute position: vec3f; attribute pa: vec3f; attribute pb: vec3f; attribute pc: vec3f; attribute color: vec4f;
+uniform viewProjection: mat4x4f; uniform res: vec2f;
+varying vColor: vec4f; varying vA: vec2f; varying vB: vec2f; varying vC: vec2f;
+fn toPx(c: vec4f) -> vec2f { return (c.xy / c.w * 0.5 + 0.5) * uniforms.res; }
+@vertex fn main(input: VertexInputs) -> FragmentInputs {
+  let ca = uniforms.viewProjection * vec4f(vertexInputs.pa, 1.0);
+  let cb = uniforms.viewProjection * vec4f(vertexInputs.pb, 1.0);
+  let cc = uniforms.viewProjection * vec4f(vertexInputs.pc, 1.0);
+  vertexOutputs.position = uniforms.viewProjection * vec4f(vertexInputs.position, 1.0);
+  if (min(min(ca.w, cb.w), cc.w) < 1e-4) { vertexOutputs.position = vec4f(0.0, 0.0, 2.0, 1.0); }
+  vertexOutputs.vColor = vertexInputs.color;
+  vertexOutputs.vA = toPx(ca); vertexOutputs.vB = toPx(cb); vertexOutputs.vC = toPx(cc);
+}`;
+BABYLON.ShaderStore.ShadersStoreWGSL.triFragmentShader = `
+varying vColor: vec4f; varying vA: vec2f; varying vB: vec2f; varying vC: vec2f;
+uniform sigma: f32; uniform opacityScale: f32; uniform res: vec2f;
+fn cr2(a: vec2f, b: vec2f) -> f32 { return a.x * b.y - a.y * b.x; }
+@fragment fn main(input: FragmentInputs) -> FragmentOutputs {
+  let p = fragmentInputs.position.xy;   // Babylon flips clip y on canvas, so this is already bottom-up like gl_FragCoord
+  let A = fragmentInputs.vA; let B = fragmentInputs.vB; let C = fragmentInputs.vC;
+  let c = cr2(B - A, C - A); let s = sign(c);
+  let l0 = length(B - A); let l1 = length(C - B); let l2 = length(A - C);
+  let r = abs(c) / (l0 + l1 + l2);
+  let m = min(min(s * cr2(B - A, p - A) / l0, s * cr2(C - B, p - B) / l1), s * cr2(A - C, p - C) / l2);
+  if (m <= 0.0 || r <= 0.0) { discard; }
+  let a = min(0.99, clamp(fragmentInputs.vColor.a * uniforms.opacityScale, 0.0, 1.0) * pow(m / r, uniforms.sigma));
+  if (a < 1.0 / 255.0) { discard; }
+  fragmentOutputs.color = vec4f(fragmentInputs.vColor.rgb, a);
+}`;
+class TriangleSplats {
+  constructor() {
+    this.mat = shaderMat("tri", { attributes: ["position", "pa", "pb", "pc", "color"], uniforms: ["viewProjection", "res", "sigma", "opacityScale"], needAlphaBlending: true });
+    this.mat.backFaceCulling = false; this.mat.disableDepthWrite = true; this.mat.alphaMode = BABYLON.Constants.ALPHA_COMBINE;
+    this.mesh = null; this.n = 0; this.buckets = new Uint32Array(65537); this.sigma = 1.0; this.opacity = 1.0; this.label = "";
+  }
+  /* untrained: three corners on each element's ellipse */
+  build(S, scale, reveal) {
+    const n = S.n, r = rng(7), gauss = S.kind === "gaussian", V = new Float32Array(n * 9), v = [0, 0, 0];
+    for (let i = 0; i < n; i++) {
+      const th = r() * TAU;
+      for (let k = 0; k < 3; k++) {
+        const a = th + k * TAU / 3 + (r() - 0.5) * (gauss ? 0.2 : 0.7), rad = 2.57 * scale * (gauss ? 0.9 + 0.2 * r() : 0.75 + 0.5 * r());
+        ellipsePt(S, i, a, rad, rad, (r() - 0.5) * 0.08, v); V.set(v, i * 9 + k * 3);
+      }
+    }
+    this.buildExplicit(V, S.col, S.op, reveal);
+    this.label = "untrained";
+  }
+  buildExplicit(V, col, op, reveal) {
+    if (this.mesh) this.mesh.dispose();
+    const n = op.length, r = rng(7);
+    const P = new Float32Array(n * 9), A = new Float32Array(n * 9), B = new Float32Array(n * 9), Cc = new Float32Array(n * 9), COL = new Float32Array(n * 12);
+    this.cent = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) {
+      const c = reveal ? revealColor(r) : [col[i * 3], col[i * 3 + 1], col[i * 3 + 2]];
+      for (let k = 0; k < 3; k++) {
+        const v = i * 3 + k;
+        for (let j = 0; j < 3; j++) { P[v * 3 + j] = V[i * 9 + k * 3 + j]; A[v * 3 + j] = V[i * 9 + j]; B[v * 3 + j] = V[i * 9 + 3 + j]; Cc[v * 3 + j] = V[i * 9 + 6 + j]; }
+        COL[v * 4] = c[0]; COL[v * 4 + 1] = c[1]; COL[v * 4 + 2] = c[2]; COL[v * 4 + 3] = op[i];
+      }
+      for (let j = 0; j < 3; j++) this.cent[i * 3 + j] = (V[i * 9 + j] + V[i * 9 + 3 + j] + V[i * 9 + 6 + j]) / 3;
+    }
+    this.n = n; this.keys = new Float32Array(n); this.order = new Uint32Array(n); this.idx = new Uint32Array(n * 3);
+    const mesh = new BABYLON.Mesh("tris", scene);
+    const vd = new BABYLON.VertexData(); vd.positions = P; vd.indices = this.idx; vd.applyToMesh(mesh, true);
+    mesh.setVerticesData("pa", A, false, 3); mesh.setVerticesData("pb", B, false, 3); mesh.setVerticesData("pc", Cc, false, 3); mesh.setVerticesData("color", COL, false, 4);
+    mesh.material = this.mat; mesh.alwaysSelectAsActiveMesh = true; mesh.isPickable = false;
+    this.mesh = mesh; this.lastSort = null; this.sort(true);
+  }
+  sort(force) {
+    const { pos, fwd } = camBasis();
+    const sig = [pos.x, pos.y, pos.z, fwd.x, fwd.y, fwd.z].map(v => v.toPrecision(6)).join();
+    if (!force && sig === this.lastSort) return;
+    this.lastSort = sig;
+    const n = this.n, c = this.cent, k = this.keys;
+    for (let i = 0; i < n; i++) k[i] = c[i * 3] * fwd.x + c[i * 3 + 1] * fwd.y + c[i * 3 + 2] * fwd.z;
+    depthOrder(k, n, this.order, this.buckets);
+    for (let i = 0; i < n; i++) { const t = this.order[i] * 3; this.idx[i * 3] = t; this.idx[i * 3 + 1] = t + 1; this.idx[i * 3 + 2] = t + 2; }
+    this.mesh.updateIndices(this.idx);
+  }
+  frame() {
+    if (!this.mesh) return;
+    this.mat.setFloat("sigma", this.sigma); this.mat.setFloat("opacityScale", this.opacity);
+    this.mat.setVector2("res", new BABYLON.Vector2(engine.getRenderWidth(), engine.getRenderHeight()));
+    this.sort(false);
+  }
+  setEnabled(on) { if (this.mesh) this.mesh.setEnabled(on); }
+  stats() { return [["triangles", this.n.toLocaleString()], ["blend", "sorted, back to front"]]; }
+}
+
+/* =========================================================================
+   Opaque triangles (Triangle Splatting+ style output): a plain depth-tested
+   mesh with flat per-triangle colors. No sorting, no blending.
+   ========================================================================= */
+BABYLON.Effect.ShadersStore.opqVertexShader = `
+precision highp float;
+attribute vec3 position; attribute vec4 color;
+uniform mat4 viewProjection;
+varying vec3 vColor;
+void main() { gl_Position = viewProjection * vec4(position, 1.0); vColor = color.rgb; }`;
+BABYLON.Effect.ShadersStore.opqFragmentShader = `
+precision highp float;
+varying vec3 vColor;
+void main() { gl_FragColor = vec4(vColor, 1.0); }`;
+BABYLON.ShaderStore.ShadersStoreWGSL.opqVertexShader = `
+attribute position: vec3f; attribute color: vec4f;
+uniform viewProjection: mat4x4f;
+varying vColor: vec3f;
+@vertex fn main(input: VertexInputs) -> FragmentInputs {
+  vertexOutputs.position = uniforms.viewProjection * vec4f(vertexInputs.position, 1.0);
+  vertexOutputs.vColor = vertexInputs.color.rgb;
+}`;
+BABYLON.ShaderStore.ShadersStoreWGSL.opqFragmentShader = `
+varying vColor: vec3f;
+@fragment fn main(input: FragmentInputs) -> FragmentOutputs { fragmentOutputs.color = vec4f(fragmentInputs.vColor, 1.0); }`;
+class OpaqueTriangles {
+  constructor() {
+    this.mat = shaderMat("opq", { attributes: ["position", "color"], uniforms: ["viewProjection"] });
+    this.mat.backFaceCulling = false;
+    this.mesh = null; this.n = 0;
+  }
+  buildExplicit(V, col, op, reveal) {
+    if (this.mesh) this.mesh.dispose();
+    const keep = [];
+    for (let i = 0; i < op.length; i++) if (op[i] > 0.5) keep.push(i);
+    const n = keep.length, r = rng(7), P = new Float32Array(n * 9), COL = new Float32Array(n * 12), idx = new Uint32Array(n * 3);
+    keep.forEach((i, j) => {
+      const c = reveal ? revealColor(r) : [col[i * 3], col[i * 3 + 1], col[i * 3 + 2]];
+      P.set(V.subarray(i * 9, i * 9 + 9), j * 9);
+      for (let k = 0; k < 3; k++) { COL.set([c[0], c[1], c[2], 1], (j * 3 + k) * 4); idx[j * 3 + k] = j * 3 + k; }
+    });
+    const mesh = new BABYLON.Mesh("opaqueTris", scene);
+    const vd = new BABYLON.VertexData(); vd.positions = P; vd.indices = idx; vd.applyToMesh(mesh, false);
+    mesh.setVerticesData("color", COL, false, 4);
+    mesh.material = this.mat; mesh.isPickable = false;
+    this.mesh = mesh; this.n = n;
+  }
+  frame() {}
+  setEnabled(on) { if (this.mesh) this.mesh.setEnabled(on); }
+  stats() { return [["triangles", this.n.toLocaleString()], ["blend", "none: opaque, depth-tested"]]; }
+}
+
+/* =========================================================================
+   RENDERER: 3D CONVEX SPLATTING (Held et al. CVPR 2025)
+   six 3D points per convex. The vertex shader projects them, builds the 2D
+   convex hull (gift wrapping) and emits the hull's padded bounding quad; the
+   fragment shader evaluates phi = (1/delta) log sum exp(delta L_j),
+   I = sigmoid(-sigma phi), with L_j normalized by sqrt(hull area), exactly as
+   the trainer does. The CPU only re-sorts when the camera moves.
+   ========================================================================= */
+BABYLON.Effect.ShadersStore.cvxVertexShader = `
+precision highp float;
+attribute vec3 position; attribute vec4 c0; attribute vec4 c1; attribute vec4 c2; attribute vec4 c3; attribute vec4 c4; attribute vec4 color;
+uniform mat4 viewProjection; uniform vec2 res; uniform float delta; uniform float sigma;
+varying vec4 vH0; varying vec4 vH1; varying vec4 vH2; varying vec4 vMeta; varying vec4 vColor;
+void main(){
+  vec3 P[6];
+  P[0] = c0.xyz; P[1] = vec3(c0.w, c1.xy); P[2] = vec3(c1.zw, c2.x); P[3] = c2.yzw; P[4] = c3.xyz; P[5] = vec3(c3.w, c4.xy);
+  vec2 S[6];
+  for (int i = 0; i < 6; i++) {
+    vec4 cl = viewProjection * vec4(P[i], 1.0);
+    if (cl.w < 1e-3) { gl_Position = vec4(0.0, 0.0, 2.0, 1.0); return; }
+    S[i] = (cl.xy / cl.w * 0.5 + 0.5) * res;
+  }
+  int start = 0;
+  for (int i = 1; i < 6; i++) if (S[i].x < S[start].x || (S[i].x == S[start].x && S[i].y < S[start].y)) start = i;
+  vec2 H[6]; int n = 0; int cur = start;
+  for (int k = 0; k < 6; k++) {
+    H[k] = S[cur]; n = k + 1;
+    int nxt = cur == 5 ? 0 : cur + 1;
+    for (int j = 0; j < 6; j++) {
+      if (j == cur) continue;
+      vec2 a = S[nxt] - S[cur]; vec2 b = S[j] - S[cur];
+      float c = a.x * b.y - a.y * b.x;
+      if (c < 0.0 || (c == 0.0 && dot(b, b) > dot(a, a))) nxt = j;
+    }
+    cur = nxt;
+    if (cur == start) break;
+  }
+  float area = 0.0; vec2 mn = H[0]; vec2 mx = H[0];
+  for (int k = 0; k < 6; k++) {
+    if (k >= n) { H[k] = H[n - 1]; continue; }
+    vec2 a = H[k]; vec2 b = H[k + 1 < n ? k + 1 : 0];
+    area += a.x * b.y - b.x * a.y; mn = min(mn, a); mx = max(mx, a);
+  }
+  if (n < 3 || abs(area) < 1e-6) { gl_Position = vec4(0.0, 0.0, 2.0, 1.0); return; }
+  float s = max(0.6, sqrt(abs(area) * 0.5));
+  float mg = min((5.5 / sigma + log(6.0) / delta) * s, 4.0 * s) + 1.0;
+  mn -= mg; mx += mg;
+  if (mx.x < 0.0 || mn.x > res.x || mx.y < 0.0 || mn.y > res.y) { gl_Position = vec4(0.0, 0.0, 2.0, 1.0); return; }
+  gl_Position = vec4(mix(mn, mx, position.xy) / res * 2.0 - 1.0, 0.5, 1.0);
+  vH0 = vec4(H[0], H[1]); vH1 = vec4(H[2], H[3]); vH2 = vec4(H[4], H[5]);
+  vMeta = vec4(float(n), s, sign(area), 0.0); vColor = color;
+}`;
+BABYLON.Effect.ShadersStore.cvxFragmentShader = `
+precision highp float;
+varying vec4 vH0; varying vec4 vH1; varying vec4 vH2; varying vec4 vMeta; varying vec4 vColor;
+uniform float delta; uniform float sigma; uniform float opacityScale;
+void main(){
+  vec2 v[6] = vec2[6](vH0.xy, vH0.zw, vH1.xy, vH1.zw, vH2.xy, vH2.zw);
+  int n = int(vMeta.x + 0.5); float s = vMeta.y; float o = vMeta.z; vec2 p = gl_FragCoord.xy;
+  float L[6]; float m = -1e9;
+  for (int j = 0; j < 6; j++) {
+    if (j >= n) break;
+    vec2 a = v[j]; vec2 d = v[j + 1 < n ? j + 1 : 0] - a; float len = length(d);
+    float l = len > 1e-5 ? -o * (d.x * (p - a).y - d.y * (p - a).x) / (len * s) : -1e9;
+    L[j] = l; m = max(m, l);
+  }
+  if (sigma * m > 7.0) discard;
+  float acc = 0.0;
+  for (int j = 0; j < 6; j++) { if (j >= n) break; acc += exp(delta * (L[j] - m)); }
+  float phi = m + log(acc) / delta;
+  float a = min(0.99, clamp(vColor.a * opacityScale, 0.0, 1.0) / (1.0 + exp(sigma * phi)));
+  if (a < 1.0 / 255.0) discard;
+  gl_FragColor = vec4(vColor.rgb, a);
+}`;
+BABYLON.ShaderStore.ShadersStoreWGSL.cvxVertexShader = `
+attribute position: vec3f; attribute c0: vec4f; attribute c1: vec4f; attribute c2: vec4f; attribute c3: vec4f; attribute c4: vec4f; attribute color: vec4f;
+uniform viewProjection: mat4x4f; uniform res: vec2f; uniform delta: f32; uniform sigma: f32;
+varying vH0: vec4f; varying vH1: vec4f; varying vH2: vec4f; varying vMeta: vec4f; varying vColor: vec4f;
+@vertex fn main(input: VertexInputs) -> FragmentInputs {
+  var P: array<vec3f, 6>;
+  P[0] = vertexInputs.c0.xyz; P[1] = vec3f(vertexInputs.c0.w, vertexInputs.c1.xy); P[2] = vec3f(vertexInputs.c1.zw, vertexInputs.c2.x);
+  P[3] = vertexInputs.c2.yzw; P[4] = vertexInputs.c3.xyz; P[5] = vec3f(vertexInputs.c3.w, vertexInputs.c4.xy);
+  var S: array<vec2f, 6>; var ok = true;
+  for (var i = 0u; i < 6u; i++) {
+    let cl = uniforms.viewProjection * vec4f(P[i], 1.0);
+    if (cl.w < 1e-3) { ok = false; }
+    S[i] = (cl.xy / max(cl.w, 1e-3) * 0.5 + 0.5) * uniforms.res;
+  }
+  var start = 0u;
+  for (var i = 1u; i < 6u; i++) { if (S[i].x < S[start].x || (S[i].x == S[start].x && S[i].y < S[start].y)) { start = i; } }
+  var H: array<vec2f, 6>; var n = 0u; var cur = start;
+  for (var k = 0u; k < 6u; k++) {
+    H[k] = S[cur]; n = k + 1u;
+    var nxt = select(cur + 1u, 0u, cur == 5u);
+    for (var j = 0u; j < 6u; j++) {
+      if (j == cur) { continue; }
+      let a = S[nxt] - S[cur]; let b = S[j] - S[cur];
+      let c = a.x * b.y - a.y * b.x;
+      if (c < 0.0 || (c == 0.0 && dot(b, b) > dot(a, a))) { nxt = j; }
+    }
+    cur = nxt;
+    if (cur == start) { break; }
+  }
+  var area = 0.0; var mn = H[0]; var mx = H[0];
+  for (var k = 0u; k < 6u; k++) {
+    if (k >= n) { H[k] = H[n - 1u]; continue; }
+    let a = H[k]; let b = H[select(k + 1u, 0u, k + 1u == n)];
+    area += a.x * b.y - b.x * a.y; mn = min(mn, a); mx = max(mx, a);
+  }
+  let s = max(0.6, sqrt(abs(area) * 0.5));
+  let mg = min((5.5 / uniforms.sigma + log(6.0) / uniforms.delta) * s, 4.0 * s) + 1.0;
+  mn -= vec2f(mg); mx += vec2f(mg);
+  var pos = vec4f(0.0, 0.0, 2.0, 1.0);
+  if (ok && n >= 3u && abs(area) >= 1e-6 && !(mx.x < 0.0 || mn.x > uniforms.res.x || mx.y < 0.0 || mn.y > uniforms.res.y)) {
+    pos = vec4f(mix(mn, mx, vertexInputs.position.xy) / uniforms.res * 2.0 - 1.0, 0.5, 1.0);
+  }
+  vertexOutputs.position = pos;
+  vertexOutputs.vH0 = vec4f(H[0], H[1]); vertexOutputs.vH1 = vec4f(H[2], H[3]); vertexOutputs.vH2 = vec4f(H[4], H[5]);
+  vertexOutputs.vMeta = vec4f(f32(n), s, sign(area), 0.0); vertexOutputs.vColor = vertexInputs.color;
+}`;
+BABYLON.ShaderStore.ShadersStoreWGSL.cvxFragmentShader = `
+varying vH0: vec4f; varying vH1: vec4f; varying vH2: vec4f; varying vMeta: vec4f; varying vColor: vec4f;
+uniform delta: f32; uniform sigma: f32; uniform opacityScale: f32; uniform res: vec2f;
+@fragment fn main(input: FragmentInputs) -> FragmentOutputs {
+  var v: array<vec2f, 6>;
+  v[0] = fragmentInputs.vH0.xy; v[1] = fragmentInputs.vH0.zw; v[2] = fragmentInputs.vH1.xy;
+  v[3] = fragmentInputs.vH1.zw; v[4] = fragmentInputs.vH2.xy; v[5] = fragmentInputs.vH2.zw;
+  let n = u32(fragmentInputs.vMeta.x + 0.5); let s = fragmentInputs.vMeta.y; let o = fragmentInputs.vMeta.z;
+  let p = fragmentInputs.position.xy;   // Babylon flips clip y on canvas, so this is already bottom-up like gl_FragCoord
+  var L: array<f32, 6>; var m = -1e9;
+  for (var j = 0u; j < n; j++) {
+    let a = v[j]; let d = v[select(j + 1u, 0u, j + 1u == n)] - a; let len = length(d);
+    var l = -1e9;
+    if (len > 1e-5) { l = -o * (d.x * (p - a).y - d.y * (p - a).x) / (len * s); }
+    L[j] = l; m = max(m, l);
+  }
+  if (uniforms.sigma * m > 7.0) { discard; }
+  var acc = 0.0;
+  for (var j = 0u; j < n; j++) { acc += exp(uniforms.delta * (L[j] - m)); }
+  let phi = m + log(acc) / uniforms.delta;
+  let a = min(0.99, clamp(fragmentInputs.vColor.a * uniforms.opacityScale, 0.0, 1.0) / (1.0 + exp(uniforms.sigma * phi)));
+  if (a < 1.0 / 255.0) { discard; }
+  fragmentOutputs.color = vec4f(fragmentInputs.vColor.rgb, a);
+}`;
+class ConvexSplats {
+  constructor() {
+    this.mat = shaderMat("cvx", { attributes: ["position", "c0", "c1", "c2", "c3", "c4", "color"], uniforms: ["viewProjection", "res", "delta", "sigma", "opacityScale"], needAlphaBlending: true });
+    this.mat.backFaceCulling = false; this.mat.disableDepthWrite = true; this.mat.alphaMode = BABYLON.Constants.ALPHA_COMBINE;
+    this.mesh = null; this.n = 0; this.buckets = new Uint32Array(65537); this.delta = 6; this.sigma = 18; this.opacity = 1.0;
+  }
+  build(S, scale, reveal) {
+    const n = S.n, r = rng(11), gauss = S.kind === "gaussian", tmp = [0, 0, 0], pts = new Float32Array(n * 18);
+    for (let i = 0; i < n; i++) for (let k = 0; k < 6; k++) {
+      const a = (k + r() * 0.8) * TAU / 6, f = 2.3 * scale * (gauss ? 0.75 + 0.25 * r() : 0.55 + 0.45 * r());
+      ellipsePt(S, i, a, f, f, (r() - 0.5) * 0.1, tmp); pts.set(tmp, i * 18 + k * 3);
+    }
+    this.buildExplicit(pts, S.col, S.op, reveal);
+  }
+  buildExplicit(pts, col, op, reveal) {
+    if (this.mesh) this.mesh.dispose();
+    const n = op.length, r = rng(11), V = n * 4;
+    const P = new Float32Array(V * 3), C = [0, 1, 2, 3, 4].map(() => new Float32Array(V * 4)), COL = new Float32Array(V * 4), pad = new Float32Array(20);
+    this.cen = new Float32Array(n * 3);
+    const corner = [[0, 0], [1, 0], [1, 1], [0, 1]];
+    for (let i = 0; i < n; i++) {
+      pad.set(pts.subarray(i * 18, i * 18 + 18));
+      for (let j = 0; j < 3; j++) { let s = 0; for (let k = 0; k < 6; k++) s += pts[i * 18 + k * 3 + j]; this.cen[i * 3 + j] = s / 6; }
+      const c = reveal ? revealColor(r) : [col[i * 3], col[i * 3 + 1], col[i * 3 + 2]];
+      for (let k = 0; k < 4; k++) {
+        const v = i * 4 + k;
+        P[v * 3] = corner[k][0]; P[v * 3 + 1] = corner[k][1];
+        for (let q = 0; q < 5; q++) C[q].set(pad.subarray(q * 4, q * 4 + 4), v * 4);
+        COL[v * 4] = c[0]; COL[v * 4 + 1] = c[1]; COL[v * 4 + 2] = c[2]; COL[v * 4 + 3] = op[i];
+      }
+    }
+    this.n = n; this.keys = new Float32Array(n); this.order = new Uint32Array(n); this.idx = new Uint32Array(n * 6);
+    const mesh = new BABYLON.Mesh("cvx", scene);
+    const vd = new BABYLON.VertexData(); vd.positions = P; vd.indices = this.idx; vd.applyToMesh(mesh, true);
+    C.forEach((a, q) => mesh.setVerticesData("c" + q, a, false, 4));
+    mesh.setVerticesData("color", COL, false, 4);
+    mesh.material = this.mat; mesh.alwaysSelectAsActiveMesh = true; mesh.isPickable = false;
+    this.mesh = mesh; this.lastSort = null; this.sort(true);
+  }
+  sort(force) {
+    const { pos, fwd } = camBasis();
+    const sig = [pos.x, pos.y, pos.z, fwd.x, fwd.y, fwd.z].map(v => v.toPrecision(6)).join();
+    if (!force && sig === this.lastSort) return;
+    this.lastSort = sig;
+    const n = this.n, c = this.cen, k = this.keys, idx = this.idx;
+    for (let i = 0; i < n; i++) k[i] = c[i * 3] * fwd.x + c[i * 3 + 1] * fwd.y + c[i * 3 + 2] * fwd.z;
+    depthOrder(k, n, this.order, this.buckets);
+    for (let i = 0; i < n; i++) { const b = this.order[i] * 4, o = i * 6; idx[o] = b; idx[o + 1] = b + 1; idx[o + 2] = b + 2; idx[o + 3] = b; idx[o + 4] = b + 2; idx[o + 5] = b + 3; }
+    this.mesh.updateIndices(idx);
+  }
+  frame() {
+    if (!this.mesh) return;
+    this.mat.setVector2("res", new BABYLON.Vector2(engine.getRenderWidth(), engine.getRenderHeight()));
+    this.mat.setFloat("delta", this.delta); this.mat.setFloat("sigma", this.sigma); this.mat.setFloat("opacityScale", this.opacity);
+    this.sort(false);
+  }
+  setEnabled(on) { if (this.mesh) this.mesh.setEnabled(on); }
+  stats() { return [["convexes", this.n.toLocaleString()], ["hulls", "built in the vertex shader"]]; }
+}
+
+/* =========================================================================
+   RENDERER: Babylon's own GaussianSplattingMesh, used for the 3DGS reference
+   and, on WebGPU, for its built-in compute point splatting
+   (pointSplattingRenderMode). Data goes in as 32-byte .splat rows.
+   ========================================================================= */
+class RefSplats {
+  constructor(pointMode) { this.pointMode = pointMode; this.mesh = null; this.n = 0; this.occlusion = false; this.renderScale = "auto"; }
+  build(S, scale, reveal) {
+    const n = S.n, buf = new ArrayBuffer(n * 32), f = new Float32Array(buf), u8 = new Uint8Array(buf), r = rng(31);
+    const c8 = v => Math.max(0, Math.min(255, Math.round(v * 255)));
+    for (let i = 0; i < n; i++) {
+      f[i * 8] = S.pos[i * 3]; f[i * 8 + 1] = S.pos[i * 3 + 1]; f[i * 8 + 2] = S.pos[i * 3 + 2];
+      for (let k = 0; k < 3; k++) f[i * 8 + 3 + k] = Math.max(1e-6, S.sig[i * 3 + k] * scale);
+      const c = reveal ? revealColor(r) : [S.col[i * 3], S.col[i * 3 + 1], S.col[i * 3 + 2]];
+      u8[i * 32 + 24] = c8(c[0]); u8[i * 32 + 25] = c8(c[1]); u8[i * 32 + 26] = c8(c[2]); u8[i * 32 + 27] = c8(S.op[i]);
+      const a1 = Array.from(S.ax.subarray(i * 9, i * 9 + 3)), a2 = Array.from(S.ax.subarray(i * 9 + 3, i * 9 + 6));
+      let a3 = Array.from(S.ax.subarray(i * 9 + 6, i * 9 + 9));
+      if (dot(cross(a1, a2), a3) < 0) a3 = a3.map(v => -v);
+      const q = SplatTrain.matToQuat(a1, a2, a3), ql = Math.hypot(...q) || 1;
+      for (let k = 0; k < 4; k++) u8[i * 32 + 28 + k] = Math.max(0, Math.min(255, Math.round(q[k] / ql * 128 + 128)));
+    }
+    if (this.mesh) this.mesh.dispose();
+    this.mesh = new BABYLON.GaussianSplattingMesh(this.pointMode ? "pointSplats" : "gaussianSplats", null, scene, false);
+    this.mesh.updateData(buf, undefined, { flipY: false });
+    this.mesh.isPickable = false;
+    if (this.pointMode) this.applyPointOptions();
+    this.n = n;
+  }
+  applyPointOptions() {
+    if (!this.mesh) return;
+    this.mesh.pointSplattingRenderMode = true;
+    this.mesh.pointSplattingOcclusionCulling = this.occlusion;
+    this.mesh.pointSplattingRenderScale = this.renderScale;
+  }
+  frame() {}
+  setEnabled(on) { if (this.mesh) this.mesh.setEnabled(on); }
+  stats() {
+    const base = [["Gaussians", this.n.toLocaleString()]];
+    if (!this.pointMode) return [...base, ["blend", "sorted on a worker"]];
+    const p = this.mesh && this.mesh.pointSplattingProgress;
+    return [...base, ["renderer", "Babylon WebGPU compute"], ["frames", p ? p.renderedFrameCount.toLocaleString() : "starting"], ["sorting", "none (atomic depth)"]];
+  }
+}
+
+/* trained parameter blocks -> renderer inputs */
+const sigm = x => 1 / (1 + Math.exp(-x));
+function gaussParamsToSet(P, n) {
+  const S = makeSet(n, "gaussian");
+  for (let i = 0; i < n; i++) {
+    const b = i * 16;
+    S.pos[i * 3] = P[b]; S.pos[i * 3 + 1] = P[b + 1]; S.pos[i * 3 + 2] = P[b + 2];
+    let w = P[b + 6], x = P[b + 7], y = P[b + 8], z = P[b + 9]; const l = Math.hypot(w, x, y, z) || 1; w /= l; x /= l; y /= l; z /= l;
+    const cols = [[1 - 2 * (y * y + z * z), 2 * (x * y + w * z), 2 * (x * z - w * y)], [2 * (x * y - w * z), 1 - 2 * (x * x + z * z), 2 * (y * z + w * x)], [2 * (x * z + w * y), 2 * (y * z - w * x), 1 - 2 * (x * x + y * y)]];
+    for (let k = 0; k < 3; k++) { S.ax.set(cols[k], i * 9 + k * 3); S.sig[i * 3 + k] = Math.exp(P[b + 3 + k]); }
+    for (let k = 0; k < 3; k++) S.col[i * 3 + k] = Math.min(1, Math.max(0, P[b + 10 + k]));
+    S.op[i] = sigm(P[b + 13]);
+  }
+  return S;
+}
+function triParamsToArrays(P, n) {
+  const V = new Float32Array(n * 9), C = new Float32Array(n * 3), O = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const b = i * 16;
+    V.set(P.subarray(b, b + 9), i * 9);
+    for (let k = 0; k < 3; k++) C[i * 3 + k] = Math.min(1, Math.max(0, P[b + 9 + k]));
+    const ab = [P[b + 3] - P[b], P[b + 4] - P[b + 1], P[b + 5] - P[b + 2]], ac = [P[b + 6] - P[b], P[b + 7] - P[b + 1], P[b + 8] - P[b + 2]];
+    O[i] = Math.hypot(...cross(ab, ac)) > 1e-12 ? sigm(P[b + 12]) : 0;
+  }
+  return { V, C, O };
+}
+function cvxParamsToArrays(P, n) {
+  const pts = new Float32Array(n * 18), C = new Float32Array(n * 3), O = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const b = i * 24;
+    pts.set(P.subarray(b, b + 18), i * 18);
+    for (let k = 0; k < 3; k++) C[i * 3 + k] = Math.min(1, Math.max(0, P[b + 18 + k]));
+    O[i] = sigm(P[b + 21]);
+  }
+  return { pts, C, O };
+}
+
+/* =========================================================================
+   RENDERER (WebGL2 fallback): GAUSSIAN POINT SPLATTING (Rijsdijk, Peters, Weinmann,
+   Marroquim, ACM TOG 2026)
+   Opaque 1-subpixel points drawn from p(q) ∝ -ln(1 - alpha(q)), with an
+   expected count of lambda = 2 pi sqrt|Sigma| Li2(alpha) per Gaussian;
+   visibility by depth buffer; frames averaged while the camera is still.
+   WebGL2 has no compute shaders, so instead of the paper's prefix sums each
+   Gaussian gets a power-of-two block of M point slots and every slot fires
+   independently with probability lambda/M (a Bernoulli approximation of the
+   Poisson count). Gaussian data sits in a float texture and the vertex shader
+   does all projection; the CPU only re-assigns blocks when the camera moves.
+   ========================================================================= */
+BABYLON.Effect.ShadersStore.gpsVertexShader = `
+precision highp float;
+precision highp sampler2D;
+attribute vec3 position; attribute float gid;
+uniform sampler2D gTex; uniform mat4 view; uniform mat4 viewProjection;
+uniform vec2 res; uniform float focal; uniform vec2 lim; uniform float dil; uniform float frame; uniform float correct;
+varying vec3 vColor;
+uint pcg(inout uint s){ s = s * 747796405u + 2891336453u; uint w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u; return (w >> 22u) ^ w; }
+float rnd(inout uint s){ return float(pcg(s)) * (1.0 / 4294967296.0); }
+void main(){
+  gl_PointSize = 1.0;
+  int id = int(gid + 0.5);
+  ivec2 b = ivec2((id % 1024) * 4, id / 1024);
+  vec4 t0 = texelFetch(gTex, b, 0), t1 = texelFetch(gTex, b + ivec2(1, 0), 0), t2 = texelFetch(gTex, b + ivec2(2, 0), 0);
+  float slot = position.x, M = position.y;
+  uint s = floatBitsToUint(t2.w) ^ (uint(slot) * 2654435769u) ^ (uint(frame) * 2246822507u);
+  pcg(s); pcg(s);
+  vec3 tv = (view * vec4(t0.xyz, 1.0)).xyz;
+  if (tv.z < 1e-4) { gl_Position = vec4(0.0, 0.0, 2.0, 1.0); return; }
+  mat3 Wr = mat3(view);
+  mat3 Sv = Wr * mat3(t1.x, t1.y, t1.z, t1.y, t1.w, t2.x, t1.z, t2.x, t2.y) * transpose(Wr);
+  float iz = 1.0 / tv.z;
+  float cx = clamp(tv.x * iz, -lim.x, lim.x), cy = clamp(tv.y * iz, -lim.y, lim.y);
+  vec3 j0 = vec3(focal * iz, 0.0, -focal * cx * iz), j1 = vec3(0.0, focal * iz, -focal * cy * iz);
+  vec3 s0 = Sv * j0, s1 = Sv * j1;
+  float A = dot(j0, s0) + dil, B = dot(j1, s0), C = dot(j1, s1) + dil;
+  float lam = t2.z * sqrt(max(A * C - B * B, 0.0));
+  if (rnd(s) * M >= lam) { gl_Position = vec4(0.0, 0.0, 2.0, 1.0); return; }   // slot fires with p = lam / M
+  float a = t0.w, invMax = 1.0 / -log(1.0 - a);
+  vec2 o = vec2(0.0); bool ok = false;
+  for (int i = 0; i < 24; i++) {
+    float u1 = max(rnd(s), 1e-7); float u2 = rnd(s);
+    float r2 = -2.0 * log(u1), sv = a * exp(-0.5 * r2);
+    float accept = correct > 0.5 ? (a * -log(1.0 - sv) / max(sv, 1e-9)) * invMax : 1.0;
+    if (rnd(s) < accept) { o = sqrt(r2) * vec2(cos(6.28318531 * u2), sin(6.28318531 * u2)); ok = sv >= 1.0 / 255.0; break; }
+  }
+  if (!ok) { gl_Position = vec4(0.0, 0.0, 2.0, 1.0); return; }
+  float L00 = sqrt(A), L10 = B / L00, L11 = sqrt(max(C - L10 * L10, 1e-6));
+  vec4 clip = viewProjection * vec4(t0.xyz, 1.0);
+  vec3 ndc = clip.xyz / clip.w;
+  gl_Position = vec4(ndc.xy + vec2(L00 * o.x, L10 * o.x + L11 * o.y) * 2.0 / res, ndc.z, 1.0);
+  vColor = texelFetch(gTex, b + ivec2(3, 0), 0).rgb;
+}`;
+BABYLON.Effect.ShadersStore.gpsFragmentShader = `
+precision highp float;
+varying vec3 vColor;
+void main(){ gl_FragColor = vec4(vColor, 1.0); }`;
+const ACCUM_FS = `
+precision highp float;
+varying vec2 vUV;
+uniform sampler2D cur; uniform sampler2D prev; uniform float ss; uniform float weight;
+void main(){
+  int k = int(ss + 0.5); ivec2 px = ivec2(gl_FragCoord.xy); ivec2 base = px * k; vec3 sum = vec3(0.0);
+  for (int j = 0; j < 3; j++) for (int i = 0; i < 3; i++) { if (i < k && j < k) sum += texelFetch(cur, base + ivec2(i, j), 0).rgb; }
+  sum /= float(k * k);
+  gl_FragColor = vec4(mix(texelFetch(prev, px, 0).rgb, sum, weight), 1.0);
+}`;
+const BLIT_FS = `
+precision highp float;
+varying vec2 vUV; uniform sampler2D src;
+void main(){ gl_FragColor = vec4(texelFetch(src, ivec2(gl_FragCoord.xy), 0).rgb, 1.0); }`;
+function li2(x) {
+  if (x <= 0) return 0;
+  if (x > 0.5) return Math.PI * Math.PI / 6 - Math.log(x) * Math.log(1 - x) - li2(1 - x);
+  let s = 0, p = 1; for (let k = 1; k <= 60; k++) { p *= x; s += p / (k * k); } return s;
+}
+const GPS_MASK = 0x10000000;
+const GPS_MIN_E = 2, GPS_MAX_E = 14;   // point-slot blocks of 4 … 16384
+class GaussianPointSplats {
+  constructor() {
+    this.mat = new BABYLON.ShaderMaterial("gpsMat", scene, "gps", {
+      attributes: ["position", "gid"], uniforms: ["view", "viewProjection", "res", "focal", "lim", "dil", "frame", "correct"], samplers: ["gTex"],
+    });
+    this.mat.backFaceCulling = false; this.mat.pointsCloud = true;
+    this.ss = 1; this.accumulate = true; this.correct = true; this.opacity = 1.0;
+    this.frameNo = 0; this.spp = 0; this.points = 0; this.slots = 0; this.lastView = ""; this.enabled = false; this.n = 0; this.dirty = true;
+    this.buckets = [];
+    for (let e = GPS_MIN_E; e <= GPS_MAX_E; e++) {
+      const size = 1 << e, pos = new Float32Array(size * 3), ix = new Uint32Array(size);
+      for (let i = 0; i < size; i++) { pos[i * 3] = i; pos[i * 3 + 1] = size; ix[i] = i; }
+      const mesh = new BABYLON.Mesh("gps" + size, scene);
+      mesh.setVerticesData("position", pos, false, 3); mesh.setIndices(ix);
+      mesh.material = this.mat; mesh.alwaysSelectAsActiveMesh = true; mesh.isPickable = false; mesh.layerMask = GPS_MASK; mesh.doNotSyncBoundingInfo = true;
+      mesh.setEnabled(false);
+      this.buckets.push({ size, mesh, cap: 0, count: 0, gid: null });
+    }
+    this.er = new BABYLON.EffectRenderer(engine);
+    this.accFx = new BABYLON.EffectWrapper({ engine, name: "gpsAccum", fragmentShader: ACCUM_FS, uniformNames: ["ss", "weight"], samplerNames: ["cur", "prev"] });
+    this.blitFx = new BABYLON.EffectWrapper({ engine, name: "gpsBlit", fragmentShader: BLIT_FS, uniformNames: [], samplerNames: ["src"] });
+    this.targetsFor = "";
+    scene.onAfterRenderObservable.add(() => this.resolve());
+  }
+  ensureCap(bk, need) {
+    if (need <= bk.cap) return;
+    const cap = Math.max(256, Math.ceil(need * 1.5)); bk.cap = cap;
+    bk.gid = new Float32Array(cap);
+    const mats = new Float32Array(cap * 16); for (let i = 0; i < cap; i++) { mats[i * 16] = mats[i * 16 + 5] = mats[i * 16 + 10] = mats[i * 16 + 15] = 1; }
+    bk.mesh.thinInstanceSetBuffer("matrix", mats, 16, true);
+    bk.mesh.thinInstanceSetBuffer("gid", bk.gid, 1, false);
+  }
+  build(S, scale, reveal) {
+    const n = S.n, r = rng(23);
+    this.n = n; this.mu = new Float32Array(n * 3); this.cov = new Float32Array(n * 6); this.col = new Float32Array(n * 3);
+    this.baseOp = new Float32Array(n); this.seed = new Float32Array(n); this.s1 = new Float32Array(n); this.s2 = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const C6 = [0, 0, 0, 0, 0, 0];
+      for (let k = 0; k < 3; k++) {
+        const o = i * 9 + k * 3, a0 = S.ax[o], a1 = S.ax[o + 1], a2 = S.ax[o + 2], s = S.sig[i * 3 + k] * scale, q = s * s;
+        C6[0] += q * a0 * a0; C6[1] += q * a0 * a1; C6[2] += q * a0 * a2; C6[3] += q * a1 * a1; C6[4] += q * a1 * a2; C6[5] += q * a2 * a2;
+      }
+      this.mu.set(S.pos.subarray(i * 3, i * 3 + 3), i * 3); this.cov.set(C6, i * 6);
+      this.s1[i] = S.sig[i * 3] * scale; this.s2[i] = S.sig[i * 3 + 1] * scale;
+      const col = reveal ? revealColor(r) : [S.col[i * 3], S.col[i * 3 + 1], S.col[i * 3 + 2]];
+      this.col.set(col, i * 3); this.baseOp[i] = S.op[i]; this.seed[i] = r();
+    }
+    this.lam0 = new Float32Array(n); this.bucketOf = new Uint8Array(n);
+    this.uploadTex();
+  }
+  /* 4 RGBA32F texels per Gaussian: (mu, alpha) (c00 c01 c02 c11) (c12 c22 lam0 seed) (rgb) */
+  uploadTex() {
+    const n = this.n, W = 4096, H = Math.max(1, Math.ceil(n / 1024)), d = new Float32Array(W * H * 4);
+    for (let i = 0; i < n; i++) {
+      const a = Math.min(0.99, this.baseOp[i] * this.opacity), lam0 = TAU * (this.correct ? li2(a) : a);
+      this.lam0[i] = lam0;
+      const o = ((i >> 10) * W + (i & 1023) * 4) * 4, c = i * 6;
+      d[o] = this.mu[i * 3]; d[o + 1] = this.mu[i * 3 + 1]; d[o + 2] = this.mu[i * 3 + 2]; d[o + 3] = a;
+      d[o + 4] = this.cov[c]; d[o + 5] = this.cov[c + 1]; d[o + 6] = this.cov[c + 2]; d[o + 7] = this.cov[c + 3];
+      d[o + 8] = this.cov[c + 4]; d[o + 9] = this.cov[c + 5]; d[o + 10] = lam0; d[o + 11] = this.seed[i];
+      d[o + 12] = this.col[i * 3]; d[o + 13] = this.col[i * 3 + 1]; d[o + 14] = this.col[i * 3 + 2]; d[o + 15] = 1;
+    }
+    if (this.tex) this.tex.dispose();
+    this.tex = BABYLON.RawTexture.CreateRGBATexture(d, W, H, scene, false, false, BABYLON.Constants.TEXTURE_NEAREST_SAMPLINGMODE, BABYLON.Constants.TEXTURETYPE_FLOAT);
+    this.dirty = true; this.spp = 0;
+  }
+  refreshOpacity() { if (this.n) this.uploadTex(); }
+  reset() { this.spp = 0; }
+  makeTargets() {
+    const W = engine.getRenderWidth(), H = engine.getRenderHeight(), key = W + "x" + H + "@" + this.ss;
+    if (key === this.targetsFor) return;
+    this.targetsFor = key;
+    if (this.rtt) { scene.customRenderTargets = scene.customRenderTargets.filter(t => t !== this.rtt); this.rtt.dispose(); this.accA.dispose(); this.accB.dispose(); }
+    const opt = (depth, type) => ({ generateMipMaps: false, generateDepthBuffer: depth, type, samplingMode: BABYLON.Constants.TEXTURE_NEAREST_SAMPLINGMODE });
+    this.rtt = new BABYLON.RenderTargetTexture("gpsPoints", { width: W * this.ss, height: H * this.ss }, scene, opt(true, BABYLON.Constants.TEXTURETYPE_UNSIGNED_BYTE));
+    this.rtt.renderList = this.buckets.map(b => b.mesh);
+    this.rtt.clearColor = new BABYLON.Color4(BG[0], BG[1], BG[2], 1);
+    this.rtt.onBeforeRenderObservable.add(() => this.splatPrep());
+    this.accA = new BABYLON.RenderTargetTexture("gpsAccA", { width: W, height: H }, scene, opt(false, BABYLON.Constants.TEXTURETYPE_HALF_FLOAT));
+    this.accB = new BABYLON.RenderTargetTexture("gpsAccB", { width: W, height: H }, scene, opt(false, BABYLON.Constants.TEXTURETYPE_HALF_FLOAT));
+    if (this.enabled) scene.customRenderTargets.push(this.rtt);
+    this.W = W; this.H = H; this.spp = 0; this.dirty = true;
+  }
+  /* camera moved: give each visible Gaussian a slot block of >= 1.4x its estimated point count */
+  rebucket(vm, vp, W, H, f, dil) {
+    const n = this.n, mu = this.mu, near = camera.minZ * 1.5, counts = new Uint32Array(this.buckets.length);
+    let est = 0;
+    for (let i = 0; i < n; i++) {
+      this.bucketOf[i] = 255;
+      const x = mu[i * 3], y = mu[i * 3 + 1], z = mu[i * 3 + 2];
+      const tz = x * vm[2] + y * vm[6] + z * vm[10] + vm[14]; if (tz < near) continue;
+      const cw = x * vp[3] + y * vp[7] + z * vp[11] + vp[15];
+      const px = ((x * vp[0] + y * vp[4] + z * vp[8] + vp[12]) / cw * 0.5 + 0.5) * W, py = ((x * vp[1] + y * vp[5] + z * vp[9] + vp[13]) / cw * 0.5 + 0.5) * H;
+      const k = f / tz, a = this.s1[i] * k, b = this.s2[i] * k, rad = 3 * a + 2;
+      if (px + rad < 0 || px - rad > W || py + rad < 0 || py - rad > H) continue;
+      const lam = this.lam0[i] * Math.sqrt((a * a + dil) * (b * b + dil));
+      est += lam;
+      const e = clamp(Math.ceil(Math.log2(lam * 1.2 + 1)), GPS_MIN_E, GPS_MAX_E) - GPS_MIN_E;
+      this.bucketOf[i] = e; counts[e]++;
+    }
+    this.buckets.forEach((bk, b) => { this.ensureCap(bk, counts[b]); bk.count = 0; });
+    for (let i = 0; i < n; i++) { const e = this.bucketOf[i]; if (e === 255) continue; const bk = this.buckets[e]; bk.gid[bk.count++] = i; }
+    let slots = 0;
+    for (const bk of this.buckets) {
+      bk.mesh.setEnabled(bk.count > 0);
+      if (bk.cap) { bk.mesh.thinInstanceCount = bk.count; if (bk.count) bk.mesh.thinInstanceBufferUpdated("gid"); }
+      slots += bk.count * bk.size;
+    }
+    this.points = est; this.slots = slots;
+  }
+  splatPrep() {
+    if (!this.n || !this.tex) return;
+    const W = this.W * this.ss, H = this.H * this.ss, ss = this.ss;
+    const view = camera.getViewMatrix(), vm = view.m;
+    const f = H / (2 * Math.tan(camera.fov / 2)), dil = 0.3 * ss * ss;
+    const vkey = Array.from(vm).map(v => v.toFixed(5)).join(",");
+    const moved = vkey !== this.lastView;
+    if (moved || !this.accumulate) this.spp = 0;
+    if (moved || this.dirty) { this.lastView = vkey; this.dirty = false; this.rebucket(vm, view.multiply(camera.getProjectionMatrix()).m, W, H, f, dil); }
+    this.frameNo = (this.frameNo + 1) % 1000000;
+    const m = this.mat;
+    m.setTexture("gTex", this.tex);
+    m.setVector2("res", new BABYLON.Vector2(W, H)); m.setFloat("focal", f);
+    m.setVector2("lim", new BABYLON.Vector2(1.3 * W / (2 * f), 1.3 * H / (2 * f))); m.setFloat("dil", dil);
+    m.setFloat("frame", this.frameNo); m.setFloat("correct", this.correct ? 1 : 0);
+  }
+  resolve() {
+    if (!this.enabled || !this.rtt || !this.n || !this.accFx.effect.isReady() || !this.blitFx.effect.isReady()) return;
+    const weight = 1 / (this.spp + 1), read = this.accA, write = this.accB;
+    this.accFx.onApplyObservable.clear();
+    this.accFx.onApplyObservable.add(() => { const e = this.accFx.effect; e.setTexture("cur", this.rtt); e.setTexture("prev", read); e.setFloat("ss", this.ss); e.setFloat("weight", weight); });
+    this.er.render(this.accFx, write);
+    engine.restoreDefaultFramebuffer();
+    this.blitFx.onApplyObservable.clear();
+    this.blitFx.onApplyObservable.add(() => this.blitFx.effect.setTexture("src", write));
+    this.er.render(this.blitFx);
+    this.accA = write; this.accB = read; this.spp++;
+  }
+  frame() { this.makeTargets(); }
+  setEnabled(on) {
+    this.enabled = on;
+    if (!on) for (const bk of this.buckets) bk.mesh.setEnabled(false);
+    if (on) { this.makeTargets(); if (this.rtt && !scene.customRenderTargets.includes(this.rtt)) scene.customRenderTargets.push(this.rtt); this.spp = 0; this.dirty = true; }
+    else if (this.rtt) scene.customRenderTargets = scene.customRenderTargets.filter(t => t !== this.rtt);
+  }
+  stats() {
+    return [["Gaussians", this.n.toLocaleString()], ["points / frame", "≈ " + (this.points / 1e6).toFixed(2) + " M"], ["samples / px", (this.spp * this.ss * this.ss).toLocaleString()], ["sorting", "none (depth buffer)"]];
+  }
+}
+
+/* =========================================================================
+   App state, source pipeline, training, UI
+   ========================================================================= */
+const GPS_TEXT_GPU = "Babylon's built-in WebGPU implementation (pointSplattingRenderMode). Each Gaussian emits a random number of opaque, pixel-sized points; compute shaders distribute the work with prefix sums and keep the nearest point per pixel with atomics, so nothing is sorted or blended. Frames accumulate while the camera is still.";
+const GPS_TEXT_GL = "WebGL2 fallback (this browser has no WebGPU). Each Gaussian fires opaque pixel-sized points with an opacity-corrected count, a depth buffer keeps the nearest, and frames accumulate. Open in a WebGPU browser for Babylon's native compute version.";
+const MODES = {
+  gs3d: {
+    title: "3D Gaussian splatting", cite: "Kerbl et al., SIGGRAPH 2023", href: "https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/",
+    text: "The baseline the newer methods are measured against, drawn by Babylon's built-in GaussianSplattingMesh: depth-sorted on a worker and alpha-blended. Train it to see optimized Gaussians next to the untrained conversion.",
+    formula: "C = Σᵢ cᵢ αᵢ Πⱼ<ᵢ (1 − αⱼ)\nαᵢ = oᵢ · exp(−½ (x−μᵢ)ᵀ Σᵢ⁻¹ (x−μᵢ))",
+    range: { min: 5000, max: 3000000, step: 5000 }, sculpt: 200000, file: 2000000, type: 0, noun: "Gaussians",
+  },
+  points: {
+    title: "Gaussian point splatting", cite: "Rijsdijk et al., ACM TOG 2026", href: "https://doi.org/10.1145/3811272",
+    text: GPS_TEXT_GPU,
+    formula: "n ~ Poisson(λ),  λ = 2π · √|Σ| · Li₂(α)\np(q) ∝ −ln(1 − α(q))\nα(q) = α · exp(−½ (q−μ)ᵀ Σ⁻¹ (q−μ))",
+    range: { min: 5000, max: 3000000, step: 5000 }, sculpt: 200000, file: 2000000, type: 0, noun: "Gaussians",
+  },
+  triangle: {
+    title: "Triangle splatting", cite: "Held et al., 2025 · Triangle Splatting+", href: "https://arxiv.org/abs/2505.19175",
+    text: "Every primitive is a triangle with a soft window inside it. Training moves the corners, colors and opacities to match the teacher views. With the opaque finish, σ is annealed toward 0 and opacity toward 1 (the Triangle Splatting+ recipe), so the result can be drawn as an ordinary depth-tested mesh.",
+    formula: "I(p) = ReLU( φ(p) / φ(s) )^σ\nφ: signed distance to the triangle\ns: incenter",
+    range: { min: 2000, max: 500000, step: 2000 }, sculpt: 120000, file: 200000, type: 1, noun: "triangles",
+  },
+  convex: {
+    title: "3D convex splatting", cite: "Held et al., CVPR 2025", href: "https://arxiv.org/abs/2411.14974",
+    text: "Every primitive is a cloud of six 3D points, projected and wrapped in a 2D convex hull, then softened with a LogSumExp over the hull's edge distances. δ rounds the corners and σ sets edge sharpness. Training moves all six points of every convex.",
+    formula: "φ(p) = (1/δ) · log Σⱼ exp(δ · Lⱼ(p))\nI(p) = sigmoid(−σ · φ(p))\nLⱼ: distance to hull edge j",
+    range: { min: 1000, max: 300000, step: 1000 }, sculpt: 60000, file: 100000, type: 2, noun: "convexes",
+  },
+};
+let R, OPQ;
+const state = {
+  mode: "gs3d", reveal: false, spin: false,
+  count: Object.fromEntries(Object.keys(MODES).map(k => [k, MODES[k].sculpt])),
+  scale: { gs3d: 1, points: 1, triangle: 1.3, convex: 1.15 },
+  source: null, builtKey: {}, token: 0, framedFor: null,
+  trained: { 0: null, 1: null, 2: null }, useTrained: true, opaqueView: true, trainVersion: 0,
+};
+const train = { teacherScale: 1, steps: 3000, res: 256, views: 64, opaqueFinish: true, running: false, token: 0, trainer: null, teacherKey: "", history: [] };
+const cache = new Map();
+const setStatus = (msg, err) => { const s = $("status"); s.textContent = msg; s.classList.toggle("err", !!err); };
+const setBusy = msg => { const b = $("busy"); b.hidden = !msg; b.textContent = msg || ""; };
+const sourceKey = () => state.source ? state.source.id + "|" + $("flip").checked + "|" + $("bakeSdf").checked + "|" + $("bakeMesh").checked : "";
+function trainedFor(mode) {
+  const t = state.trained[MODES[mode].type];
+  return t && state.useTrained && t.sourceKey === sourceKey() ? t : null;
+}
+
+async function getSet(mode, token, N = state.count[mode]) {
+  const src = state.source, isStale = () => token !== state.token;
+  const key = [src.id, N, src.type === "sdf" ? $("bakeSdf").checked : src.type === "mesh" ? $("bakeMesh").checked : "", src.type !== "sdf" && $("flip").checked].join("|");
+  if (cache.has(key)) return cache.get(key);
+  let S;
+  if (src.type === "sdf") S = await sampleSDF(src.code, N, $("bakeSdf").checked, setBusy, isStale);
+  else if (src.type === "mesh") { setBusy("Sampling surface…"); await tick(); S = sampleMesh(src.soup, N, $("bakeMesh").checked); }
+  else if (src.type === "gaussians") { setBusy("Selecting splats…"); await tick(); S = budgetSet(src.set, N); }
+  else S = await pointsToSet(src.P, src.C, N, setBusy);
+  if (src.type !== "sdf" && $("flip").checked) S = flipSet(S);
+  if (cache.size > 6) cache.delete(cache.keys().next().value);
+  cache.set(key, S);
+  return S;
+}
+function enableOnly(mode) {
+  const opq = mode === "triangle" && useOpaque();
+  for (const k in R) R[k].setEnabled(k === mode && !opq);
+  OPQ.setEnabled(opq);
+}
+const useOpaque = () => { const t = trainedFor("triangle"); return !!(t && t.opaque && state.opaqueView); };
+const activeRenderer = () => state.mode === "triangle" && useOpaque() ? OPQ : R[state.mode];
+async function rebuild(force) {
+  if (!state.source) return;
+  const mode = state.mode, token = ++state.token, tr = trainedFor(mode);
+  const key = [sourceKey(), state.count[mode], state.scale[mode], state.reveal, tr ? tr.version : 0, mode === "triangle" && useOpaque()].join("|");
+  if (!force && state.builtKey[mode] === key) { enableOnly(mode); setBusy(""); return; }
+  try {
+    if (tr) {
+      setBusy("Building trained " + MODES[mode].noun + "…"); await tick();
+      if (token !== state.token) return;
+      buildFromTrained(mode, tr);
+    } else {
+      const S = await getSet(mode, token);
+      if (token !== state.token) return;
+      setBusy("Building " + MODES[mode].title.toLowerCase() + "…"); await tick();
+      if (token !== state.token) return;
+      R[mode].build(S, state.scale[mode], state.reveal);
+      const fk = state.source.id + "|" + $("flip").checked;
+      if (state.framedFor !== fk) { frameSet(S); state.framedFor = fk; }
+    }
+    enableOnly(mode);
+    state.builtKey[mode] = key;
+    setBusy("");
+  } catch (e) {
+    if (e.message === "stale") return;
+    setBusy(""); setStatus(e.message, true); console.error(e);
+  }
+}
+function buildFromTrained(mode, tr) {
+  if (tr.type === 0) R[mode].build(gaussParamsToSet(tr.P, tr.n), state.scale[mode] / (MODES[mode].type === 0 ? 1 : 1), state.reveal);
+  else if (tr.type === 1) {
+    const { V, C, O } = triParamsToArrays(tr.P, tr.n);
+    if (useOpaque()) OPQ.buildExplicit(V, C, O, state.reveal);
+    else { R.triangle.sigma = tr.sigma; R.triangle.buildExplicit(V, C, O, state.reveal); }
+  } else {
+    const { pts, C, O } = cvxParamsToArrays(tr.P, tr.n);
+    R.convex.buildExplicit(pts, C, O, state.reveal);
+  }
+}
+function invalidate() { for (const k in MODES) state.builtKey[k] = ""; }
+
+/* ---- sculpt source ---- */
+const presetSel = $("preset"), codeEl = $("code");
+for (const name of Object.keys(PRESETS)) { const o = document.createElement("option"); o.value = o.textContent = name; presetSel.append(o); }
+presetSel.addEventListener("change", () => { codeEl.value = PRESETS[presetSel.value]; buildSculpt(); });
+let sculptId = 0;
+async function buildSculpt() {
+  try { SDF.compile(codeEl.value); }
+  catch (e) { setStatus("Code error: " + e.message, true); return; }
+  if (!state.source || state.source.type !== "sdf") for (const k in state.count) state.count[k] = MODES[k].sculpt;
+  state.source = { type: "sdf", id: "sdf" + (++sculptId), code: codeEl.value, label: "SDF sculpt" };
+  state.framedFor = null; invalidate();
+  setStatus("Sampling the zero surface of the distance field…");
+  $("buildBtn").disabled = true;
+  await rebuild(true);
+  $("buildBtn").disabled = false;
+  if (!$("status").classList.contains("err")) setStatus(`Sculpt sampled into ${activeRenderer().n.toLocaleString()} surface elements.`);
+  renderPanel();
+}
+$("buildBtn").addEventListener("click", buildSculpt);
+codeEl.addEventListener("keydown", e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); buildSculpt(); }
+  if (e.key === "Tab") { e.preventDefault(); codeEl.setRangeText("  ", codeEl.selectionStart, codeEl.selectionEnd, "end"); }
+});
+$("bakeSdf").addEventListener("change", () => { if (state.source?.type === "sdf") { invalidate(); rebuild(); renderPanel(); } });
+$("bakeMesh").addEventListener("change", () => { if (state.source?.type === "mesh") { invalidate(); rebuild(); renderPanel(); } });
+$("flip").addEventListener("change", () => { if (state.source && state.source.type !== "sdf") { state.framedFor = null; invalidate(); rebuild(); renderPanel(); } });
+
+/* ---- file source ---- */
+const MAIN_EXT = [".glb", ".gltf", ".obj", ".stl", ".ply", ".splat", ".spz"];
+let fileId = 0;
+async function loadFiles(list) {
+  const files = Array.from(list);
+  const main = MAIN_EXT.map(ext => files.find(f => f.name.toLowerCase().endsWith(ext))).find(Boolean);
+  if (!main) { setStatus("No model found. Use .glb, .gltf, .obj, .stl, .ply, .splat or .spz.", true); return; }
+  selectSourceTab("file");
+  const ext = main.name.toLowerCase().slice(main.name.lastIndexOf("."));
+  setStatus("Reading " + main.name + "…"); setBusy("Loading " + main.name + "…");
+  const token = ++state.token;
+  let container;
+  try {
+    BABYLON.FilesInputStore.FilesToLoad = {};
+    for (const f of files) BABYLON.FilesInputStore.FilesToLoad[f.name.toLowerCase()] = f;
+    container = await BABYLON.LoadAssetContainerAsync("file:" + main.name, scene, { pluginExtension: ext, pluginOptions: { splat: { keepInRam: true, spzLibraryUrl: "" } } });
+    const splatMesh = container.meshes.find(m => m.getClassName && m.getClassName() === "GaussianSplattingMesh");
+    let src;
+    if (splatMesh) {
+      const set = gaussiansFromSplatMesh(splatMesh);
+      if (!set || !set.n) throw new Error("the splat file loaded but no splat data could be read from it.");
+      src = { type: "gaussians", set, label: `${main.name} · ${set.n.toLocaleString()} trained Gaussians` };
+    } else {
+      const meshes = container.meshes.filter(m => m.getTotalVertices && m.getTotalVertices() > 0);
+      const pointMesh = meshes.find(m => !m.getIndices() || !m.getIndices().length);
+      if (pointMesh) {
+        const P = pointMesh.getVerticesData("position"), col = pointMesh.getVerticesData("color");
+        pointMesh.computeWorldMatrix(true);
+        const m = pointMesh.getWorldMatrix().m, np = P.length / 3, Pw = new Float32Array(P.length);
+        for (let i = 0; i < np; i++) { const x = P[i * 3], y = P[i * 3 + 1], z = P[i * 3 + 2]; Pw[i * 3] = x * m[0] + y * m[4] + z * m[8] + m[12]; Pw[i * 3 + 1] = x * m[1] + y * m[5] + z * m[9] + m[13]; Pw[i * 3 + 2] = x * m[2] + y * m[6] + z * m[10] + m[14]; }
+        let C = null;
+        if (col) { const cs = Math.round(col.length / np); C = new Float32Array(np * 3); for (let i = 0; i < np; i++) { C[i * 3] = col[i * cs]; C[i * 3 + 1] = col[i * cs + 1]; C[i * 3 + 2] = col[i * cs + 2]; } }
+        src = { type: "points", P: Pw, C, n: np, label: `${main.name} · ${np.toLocaleString()} points` };
+      } else {
+        if (!meshes.length) throw new Error("the file loaded but has no geometry.");
+        setBusy("Reading materials…");
+        const soup = await collectTriangles(meshes);
+        if (!soup.tris) throw new Error("no triangles were found.");
+        src = { type: "mesh", soup, label: `${main.name} · ${soup.tris.toLocaleString()} triangles${soup.mats.some(m => m.tex) ? " · textured" : ""}` };
+      }
+    }
+    container.dispose(); container = null;
+    if (token !== state.token) return;
+    src.id = "file" + (++fileId);
+    const cap = src.type === "gaussians" ? src.set.n : src.type === "points" ? src.n : Infinity;
+    for (const k in state.count) state.count[k] = Math.min(MODES[k].file, cap, MODES[k].range.max);
+    state.source = src; state.framedFor = null; invalidate();
+    renderPanel();
+    setStatus("Loaded " + src.label + ".");
+    await rebuild(true);
+  } catch (e) {
+    if (container) container.dispose();
+    setBusy(""); setStatus("Couldn't load " + main.name + ": " + (e.message || e), true); console.error(e);
+  }
+}
+$("fileInput").addEventListener("change", e => { if (e.target.files.length) loadFiles(e.target.files); e.target.value = ""; });
+const stage = $("stage"), overlay = $("dropOverlay");
+let dragDepth = 0;
+stage.addEventListener("dragenter", e => { e.preventDefault(); dragDepth++; overlay.hidden = false; });
+stage.addEventListener("dragover", e => e.preventDefault());
+stage.addEventListener("dragleave", () => { if (--dragDepth <= 0) { dragDepth = 0; overlay.hidden = true; } });
+stage.addEventListener("drop", e => { e.preventDefault(); dragDepth = 0; overlay.hidden = true; if (e.dataTransfer.files.length) loadFiles(e.dataTransfer.files); });
+const dz = $("dropzone");
+dz.addEventListener("dragover", e => e.preventDefault());
+dz.addEventListener("drop", e => { e.preventDefault(); if (e.dataTransfer.files.length) loadFiles(e.dataTransfer.files); });
+function selectSourceTab(src) {
+  document.querySelectorAll("[data-src]").forEach(b => b.setAttribute("aria-selected", b.dataset.src === src));
+  $("sdfBox").hidden = src !== "sdf"; $("fileBox").hidden = src !== "file";
+}
+document.querySelectorAll("[data-src]").forEach(b => b.addEventListener("click", () => {
+  selectSourceTab(b.dataset.src);
+  if (b.dataset.src === "sdf" && state.source?.type !== "sdf") buildSculpt();
+  if (b.dataset.src === "file" && state.source?.type === "sdf") setStatus("Choose a file. The sculpt stays on screen until it loads.");
+}));
+
+/* =========================================================================
+   Training: teacher = a dense version of the source rendered from many
+   cameras by the trainer's own Gaussian rasterizer; student = the current
+   renderer's primitives, optimized against those views.
+   ========================================================================= */
+async function teacherSet(token) {
+  const src = state.source, stale = () => token !== train.token;
+  let S;
+  if (src.type === "sdf") S = await sampleSDF(src.code, Math.round(400000 * train.teacherScale), $("bakeSdf").checked, m => setTrainStatus("Teacher: " + m.toLowerCase()), stale);
+  else if (src.type === "mesh") { setTrainStatus("Teacher: sampling 1,000,000 surface points…"); await tick(); S = sampleMesh(src.soup, Math.round(1000000 * train.teacherScale), $("bakeMesh").checked); }
+  else if (src.type === "gaussians") S = budgetSet(src.set, 1500000);
+  else S = await pointsToSet(src.P, src.C, Math.min(src.n, 800000), m => setTrainStatus("Teacher: " + m.toLowerCase()));
+  if (src.type !== "sdf" && $("flip").checked) S = flipSet(S);
+  return S;
+}
+const setTrainStatus = (msg, err) => { const s = $("trainStatus"); s.textContent = msg; s.classList.toggle("err", !!err); };
+const fmtTime = ms => ms < 60000 ? (ms / 1000).toFixed(1) + " s" : Math.floor(ms / 60000) + " min " + Math.round(ms % 60000 / 1000) + " s";
+async function startTraining() {
+  if (train.running) { train.token++; return; }
+  if (!navigator.gpu) { setTrainStatus("Training needs WebGPU, which this browser doesn't provide.", true); return; }
+  if (!state.source) return;
+  const mode = state.mode, m = MODES[mode], type = m.type;
+  const limit = [800000, 400000, 250000][type];
+  if (state.count[mode] > limit) { setTrainStatus(`Training is capped at ${limit.toLocaleString()} ${m.noun} to stay within GPU memory. Lower the count and train again.`, true); return; }
+  const token = ++train.token, stale = () => token !== train.token;
+  train.running = true; train.history = []; drawLoss(); renderTrainBlock();
+  try {
+    if (!train.trainer) { setTrainStatus("Starting WebGPU…"); train.trainer = new SplatTrain.Trainer(await SplatTrain.createDevice()); }
+    const T = train.trainer;
+    const tKey = [sourceKey(), train.res, train.views].join("|");
+    if (train.teacherKey !== tKey) {
+      const S = await teacherSet(token);
+      if (stale()) throw new Error("stale");
+      const b = robustBounds(S);
+      setTrainStatus(`Teacher: rendering ${train.views} views of ${S.n.toLocaleString()} Gaussians…`);
+      const info = await T.prepare({ teacherParams: SplatTrain.gaussianParams(S), nTeacher: S.n, center: b.center, radius: b.radius, W: train.res, H: train.res, numViews: train.views,
+        onProgress: f => setTrainStatus(`Teacher: rendering views ${Math.round(f * train.views)} / ${train.views}`), isStale: stale });
+      train.teacherKey = tKey;
+      if (info.dropped) console.warn("teacher views with dropped keys:", info.dropped);
+    }
+    // student = exactly what the untrained renderer shows now
+    const N = state.count[mode], Sst = await getSet(mode, ++state.token, N);
+    if (stale()) throw new Error("stale");
+    const r = rng(77), sc = state.scale[mode];
+    const params = type === 0 ? SplatTrain.gaussianParams(Sst, sc) : type === 1 ? SplatTrain.triangleParams(Sst, sc, r) : SplatTrain.convexParams(Sst, sc, r);
+    const opaqueFinish = type === 1 && train.opaqueFinish;
+    const t0 = performance.now(), version = ++state.trainVersion, skey = sourceKey();
+    const apply = (P, info) => {
+      state.trained[type] = { type, P, n: Sst.n, sourceKey: skey, version: version * 100000 + info.step, sigma: info.sigmaTri, opaque: opaqueFinish && info.final, steps: info.step };
+      state.useTrained = true;
+      if (MODES[state.mode].type === type) rebuild();
+      if (info.final) renderPanel(); else renderTrainBlock();
+    };
+    await T.train({
+      type, params, n: Sst.n, steps: train.steps, sigmaTri: R.triangle.sigma, deltaCvx: R.convex.delta, sigmaCvx: R.convex.sigma, opaqueFinish,
+      snapshotEvery: Math.max(300, Math.round(train.steps / 8)), isStale: stale,
+      onProgress: p => {
+        train.history.push([p.step, p.loss]); drawLoss();
+        const rate = p.step / (p.ms / 1000);
+        setTrainStatus(`Training ${Sst.n.toLocaleString()} ${m.noun}: step ${p.step.toLocaleString()} / ${p.steps.toLocaleString()} · loss ${p.loss.toFixed(4)} · ${rate.toFixed(0)} steps/s`);
+      },
+      onSnapshot: apply,
+    });
+    if (stale()) throw new Error("stale");
+    const h = train.history, first = h.length ? h[0][1] : NaN, last = h.length ? h[h.length - 1][1] : NaN;
+    setTrainStatus(`Trained ${Sst.n.toLocaleString()} ${m.noun} in ${fmtTime(performance.now() - t0)}. Loss ${first.toFixed(4)} → ${last.toFixed(4)}.${opaqueFinish ? " Triangles are now opaque and drawn as a plain mesh." : ""}`);
+  } catch (e) {
+    if (e.message === "stale") setTrainStatus("Training stopped. The last snapshot stays on screen.");
+    else { setTrainStatus("Training failed: " + e.message, true); console.error(e); }
+  }
+  train.running = false; renderTrainBlock();
+}
+function drawLoss() {
+  const c = $("lossChart"), ctx = c.getContext("2d"), dpr = window.devicePixelRatio || 1;
+  const w = c.clientWidth, h = c.clientHeight;
+  c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  const css = getComputedStyle(document.documentElement), line = css.getPropertyValue("--line").trim(), acc = css.getPropertyValue("--accent").trim(), mut = css.getPropertyValue("--muted").trim();
+  ctx.strokeStyle = line; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(0, h - 0.5); ctx.lineTo(w, h - 0.5); ctx.stroke();
+  const d = train.history.filter(p => isFinite(p[1]));
+  c.hidden = !d.length;
+  if (d.length < 2) return;
+  const maxS = train.steps, lo = Math.min(...d.map(p => p[1])), hi = Math.max(...d.map(p => p[1]));
+  const X = s => s / maxS * (w - 4) + 2, Y = v => h - 4 - (hi > lo ? (v - lo) / (hi - lo) : 0.5) * (h - 10);
+  ctx.strokeStyle = acc; ctx.lineWidth = 1.5; ctx.beginPath();
+  d.forEach((p, i) => i ? ctx.lineTo(X(p[0]), Y(p[1])) : ctx.moveTo(X(p[0]), Y(p[1]))); ctx.stroke();
+  ctx.fillStyle = mut; ctx.font = "10.5px " + css.getPropertyValue("--mono"); ctx.textBaseline = "top";
+  ctx.fillText("loss " + hi.toFixed(3), 4, 2);
+}
+function seg(id, label, options, value, onPick) {
+  const wrap = document.createElement("div"); wrap.className = "ctl";
+  wrap.innerHTML = `<div class="row"><label>${label}</label></div><div class="seg">${options.map(o => `<button type="button" id="${id}-${o[0]}" aria-pressed="${o[0] === value}">${o[1]}</button>`).join("")}</div>`;
+  wrap.querySelectorAll("button").forEach((btn, i) => btn.addEventListener("click", () => { wrap.querySelectorAll("button").forEach((x, j) => x.setAttribute("aria-pressed", i === j)); onPick(options[i][0]); }));
+  return wrap;
+}
+function renderTrainBlock() {
+  const m = MODES[state.mode], box = $("trainControls"); box.innerHTML = "";
+  const tr = trainedFor(state.mode) || (state.trained[m.type] && state.trained[m.type].sourceKey === sourceKey() ? state.trained[m.type] : null);
+  $("trainNote").textContent = `Renders ${train.views} views of a dense version of the current source, then optimizes this renderer's ${state.count[state.mode].toLocaleString()} ${m.noun} against them with Adam. Dead ones are respawned next to busy ones as it goes.`;
+  if (!train.running) {
+    box.append(slider("train-steps", "Steps", 500, 15000, 500, train.steps, v => v.toLocaleString(), v => { train.steps = v; }));
+    box.append(seg("train-res", "Training resolution", [[192, "192²"], [256, "256²"], [384, "384²"]], train.res, v => { train.res = v; }));
+    box.append(seg("train-views", "Teacher views", [[32, "32"], [64, "64"], [96, "96"]], train.views, v => { train.views = v; }));
+    if (m.type === 1) box.append(check("train-opaque", "Opaque finish (Triangle Splatting+): end with hard, solid triangles", train.opaqueFinish, v => { train.opaqueFinish = v; }));
+  }
+  const btns = document.createElement("div"); btns.className = "rowbtns";
+  btns.innerHTML = `<button class="btn primary" id="trainBtn" type="button">${train.running ? "Stop training" : "Train " + m.noun}</button>` +
+    (tr ? `<button class="btn" id="trainedToggle" type="button">${state.useTrained ? "Show untrained" : "Show trained"}</button>` : "");
+  box.append(btns);
+  $("trainBtn").addEventListener("click", startTraining);
+  if (tr) $("trainedToggle").addEventListener("click", () => { state.useTrained = !state.useTrained; rebuild(); renderTrainBlock(); renderPanel(); });
+  if (!navigator.gpu) { $("trainBtn").disabled = true; setTrainStatus("Training needs WebGPU, which this browser doesn't provide."); }
+}
+
+/* ---- renderer panel ---- */
+function slider(id, label, min, max, step, value, fmt, onInput, help) {
+  const wrap = document.createElement("div"); wrap.className = "ctl";
+  wrap.innerHTML = `<div class="row"><label for="${id}">${label}</label><output id="${id}-o"></output></div>
+    <input type="range" id="${id}" min="${min}" max="${max}" step="${step}" value="${value}">${help ? `<small>${help}</small>` : ""}`;
+  const inp = wrap.querySelector("input"), out = wrap.querySelector("output");
+  out.textContent = fmt(value);
+  inp.addEventListener("input", () => { out.textContent = fmt(+inp.value); onInput(+inp.value); });
+  return wrap;
+}
+function check(id, label, value, onChange, disabled) {
+  const l = document.createElement("label"); l.className = "check";
+  l.innerHTML = `<input type="checkbox" id="${id}" ${value ? "checked" : ""} ${disabled ? "disabled" : ""}> ${label}`;
+  l.querySelector("input").addEventListener("change", e => onChange(e.target.checked));
+  return l;
+}
+const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
+const rbLater = debounce(() => rebuild(), 300);
+function renderPanel() {
+  const m = MODES[state.mode], mode = state.mode, r = R[mode], tr = trainedFor(mode);
+  $("tech").innerHTML = `<h2>${m.title}</h2><div class="cite">${m.cite} · <a href="${m.href}" target="_blank" rel="noopener">paper</a></div>
+    <p>${mode === "points" && !isGPU ? GPS_TEXT_GL : m.text}</p><div class="formula">${m.formula}</div>`;
+  const C = $("controls"); C.innerHTML = "";
+  if (mode === "triangle") {
+    if (tr && tr.opaque) C.append(check("tri-opq", "Draw as an opaque mesh (no sorting, no blending)", state.opaqueView, v => { state.opaqueView = v; rebuild(); }));
+    C.append(slider("tri-sigma", "Window σ", 0.02, 4, 0.02, r.sigma, v => v.toFixed(2), v => r.sigma = v, "Near 0: hard edges. Higher: soft, shrinking toward the incenter."));
+    C.append(slider("tri-op", "Opacity", 0.1, 1, 0.01, r.opacity, v => v.toFixed(2), v => r.opacity = v));
+  } else if (mode === "convex") {
+    C.append(slider("cvx-delta", "Smoothness δ", 1, 60, 0.5, r.delta, v => v.toFixed(1), v => r.delta = v, "Low δ rounds the hull's corners into a blob."));
+    C.append(slider("cvx-sigma", "Sharpness σ", 2, 80, 1, r.sigma, v => v.toFixed(0), v => r.sigma = v, "High σ gives a crisp polygon edge. Training uses the values set here."));
+    C.append(slider("cvx-op", "Opacity", 0.1, 1, 0.01, r.opacity, v => v.toFixed(2), v => r.opacity = v));
+  } else if (mode === "points" && isGPU) {
+    C.append(check("gps-occ", "Occlusion culling against last frame's depth", r.occlusion, v => { r.occlusion = v; r.applyPointOptions(); }));
+    C.append(seg("gps-scale", "Internal resolution", [["auto", "auto"], [1, "full"], [0.5, "half"]], r.renderScale, v => { r.renderScale = v; r.applyPointOptions(); }));
+  } else if (mode === "points") {
+    C.append(seg("ss", "Supersampling", [[1, "1×1"], [2, "2×2"], [3, "3×3"]], r.ss, v => { r.ss = v; r.makeTargets(); }));
+    C.append(check("gps-acc", "Temporal accumulation", r.accumulate, v => { r.accumulate = v; r.reset(); }));
+    C.append(check("gps-corr", "Opacity correction (Li₂ count + denser center)", r.correct, v => { r.correct = v; r.refreshOpacity(); }));
+    C.append(slider("gps-op", "Opacity", 0.1, 1, 0.01, r.opacity, v => v.toFixed(2), v => { r.opacity = v; r.refreshOpacity(); }));
+  }
+  const src = state.source, cap = src ? (src.type === "gaussians" ? src.set.n : src.type === "points" ? src.n : Infinity) : Infinity;
+  const rg = m.range, max = Math.min(rg.max, cap), min = Math.min(rg.min, max);
+  const fileish = src && (src.type === "gaussians" || src.type === "points");
+  const help = tr ? "Showing trained primitives. Changing the count shows a fresh untrained conversion." :
+    src && src.type === "gaussians" ? `of ${src.set.n.toLocaleString()} in the file. The largest, most opaque are kept and grown to cover gaps.`
+    : src && src.type === "points" ? `of ${src.n.toLocaleString()} points. Normals come from each point's 10 nearest neighbours.`
+    : "Resamples the surface on all CPU cores.";
+  C.append(slider(mode + "-count", fileish ? "Splats kept" : "Primitives", min, max, rg.step, Math.min(state.count[mode], max), v => v.toLocaleString(), v => {
+    state.count[mode] = v; if (trainedFor(mode)) { state.useTrained = false; renderTrainBlock(); } rbLater();
+  }, help));
+  if (!tr || m.type === 0) C.append(slider(mode + "-scale", "Primitive size", 0.3, 3, 0.05, state.scale[mode], v => v.toFixed(2) + "×", v => { state.scale[mode] = v; rbLater(); }));
+  C.append(check("reveal", "Color each primitive randomly", state.reveal, v => { state.reveal = v; rebuild(); }));
+  C.append(check("spin", "Auto-orbit", state.spin, v => state.spin = v));
+  renderTrainBlock();
+}
+function setMode(mode) {
+  if (!MODES[mode]) mode = "gs3d";
+  state.mode = mode;
+  document.querySelectorAll("[data-mode]").forEach(b => b.setAttribute("aria-selected", b.dataset.mode === mode));
+  renderPanel();
+  rebuild();
+  try { history.replaceState(null, "", "#" + mode); } catch (e) {}
+}
+document.querySelectorAll("[data-mode]").forEach(b => b.addEventListener("click", () => setMode(b.dataset.mode)));
+
+/* ---- start ---- */
+(async () => {
+  await initEngine();
+  R = { gs3d: new RefSplats(false), points: isGPU ? new RefSplats(true) : new GaussianPointSplats(), triangle: new TriangleSplats(), convex: new ConvexSplats() };
+  OPQ = new OpaqueTriangles();
+  const hud = $("hud");
+  let fpsAcc = 0, fpsN = 0, lastHud = 0;
+  engine.runRenderLoop(() => {
+    const dt = engine.getDeltaTime();
+    if (state.spin) camera.alpha += dt * 0.00012;
+    activeRenderer().frame();
+    scene.render();
+    fpsAcc += dt; fpsN++;
+    const now = performance.now();
+    if (now - lastHud > 400) {
+      const fps = fpsN ? 1000 / (fpsAcc / fpsN) : 0; fpsAcc = 0; fpsN = 0; lastHud = now;
+      const tr = trainedFor(state.mode);
+      const lines = [["fps", fps.toFixed(0)], ["engine", isGPU ? "WebGPU" : "WebGL2"]];
+      if (state.source) lines.push(["source", state.source.label.split(" · ")[0]]);
+      lines.push(["state", tr ? `trained · ${tr.steps.toLocaleString()} steps` : "untrained conversion"]);
+      hud.innerHTML = [...lines, ...activeRenderer().stats()].map(([k, v]) => `<div>${k} <b>${v}</b></div>`).join("");
+    }
+  });
+  new ResizeObserver(() => engine.resize()).observe(canvas);
+  presetSel.value = "Gyroid orb"; codeEl.value = PRESETS["Gyroid orb"];
+  state.mode = MODES[(location.hash || "").slice(1)] ? location.hash.slice(1) : "gs3d";
+  document.querySelectorAll("[data-mode]").forEach(b => b.setAttribute("aria-selected", b.dataset.mode === state.mode));
+  renderPanel();
+  await buildSculpt();
+  window.__splat = { R, OPQ, state, train, engine, scene, camera, setMode, loadFiles, buildSculpt, startTraining, isGPU };
+  window.__ready = true;
+})().catch(e => {
+  console.error(e);
+  stage.insertAdjacentHTML("beforeend", `<div class="err-overlay">Couldn't start the renderer: ${e.message}</div>`);
+  window.__err = String(e.stack || e);
+});
+
+</script>
+
+</body>
+</html>
