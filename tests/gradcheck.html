@@ -56,8 +56,8 @@ window.gradcheck = async function() {
     R.sigmaTri = 1.3; R.deltaCvx = 6; R.sigmaCvx = 12;
     const gt = dev.createBuffer({ size: W*H*4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
     // target image from different params
-    R.setParams(makePrims(type, n, 99)); await R.project(view);
-    let enc = dev.createCommandEncoder(); R.encodeRaster(enc); R.encodePack(enc, gt, 0); dev.queue.submit([enc.finish()]);
+    R.setParams(makePrims(type, n, 99));
+    let enc = dev.createCommandEncoder(); R.encodeProject(enc, view); R.encodeRaster(enc); R.encodePack(enc, gt, 0); dev.queue.submit([enc.finish()]);
     const gtv = new Uint32Array((await R.readBuffer(gt, W*H*4)).buffer);
     const G = new Float32Array(W*H*3); for (let p=0;p<W*H;p++){ const u=gtv[p]; G[p*3]=(u&255)/255; G[p*3+1]=((u>>8)&255)/255; G[p*3+2]=((u>>16)&255)/255; }
     const lossOf = async (P) => { R.setParams(P); await R.render(view); const img = await R.readImage(); let L=0; for (let p=0;p<W*H;p++) for (let k=0;k<3;k++){ const d=img[p*4+k]-G[p*3+k]; L+=0.8*Math.abs(d)+0.2*d*d; } return L/(W*H*3); };
@@ -127,7 +127,7 @@ window.forward = async function() {
     const t0 = performance.now();
     await R.render(views[vi]);
     const img = await R.readImage();
-    out.push({ vi, K: R.Kraw, ms: Math.round(performance.now() - t0), png: toPNG(img, W, H) });
+    out.push({ vi, K: (await R.readKeyInfo()).Kraw, ms: Math.round(performance.now() - t0), png: toPNG(img, W, H) });
   }
   return { out, log };
 };

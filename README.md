@@ -42,12 +42,14 @@ Babylon.js 9.32.0 and its loaders load from jsDelivr; there is no build step.
 - **Forward render:** teacher views of `examples/helix.splat`.
 - **Train test:** 2,000 Gaussians and 2,000 triangles for 400 steps. Loss drops from ~0.10 to ~0.012 (Gaussians) and ~0.025 (triangles, opaque).
 
+`tests/bench.html` trains all three primitive types at the app's default sizes against a procedural teacher and reports steps per second, the loss curve and a render of each result. Query parameters change the sizes, for example `tests/bench.html?types=1&steps=500`.
+
 ## Status and known limits
 
 This is a research playground, not a production renderer. Open questions and good first issues:
 
-- **Unverified at full scale.** Development happened on a software GPU, so full-size runs (100k+ primitives, 3,000 steps, 256²) have not been benchmarked on real hardware yet. Numbers and screenshots from real GPUs are very welcome.
-- **One GPU→CPU readback per training step** (to size the sort). Removing it with indirect dispatch would speed training up.
+- **Benchmarked on one GPU so far.** On an RTX 5080 at the defaults (3,000 steps, 256², 64 views), training runs at about 54 steps/s for 200k Gaussians, 131 for 120k triangles and 33 for 60k convexes. Numbers from other GPUs (`tests/bench.html`) and screenshots are very welcome.
+- **The backward pass dominates training time** (float atomics contend within each tile). Reducing per tile before the atomic add is the next big speedup; see `AGENTS.md`.
 - **View-independent color** (no spherical harmonics) and a plain L1/L2 loss (no D-SSIM).
 - **Memory caps** on training: 800k Gaussians, 400k triangles, 250k convexes.
 - **Convex training** treats hull membership as fixed per step (as the paper does); gradients are approximate where points cross the hull.

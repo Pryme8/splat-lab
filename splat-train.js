@@ -7,7 +7,8 @@
    Pipeline per view: project -> tile counts -> prefix sum -> duplicate keys
    (tile | depth) -> 4-bit LSD radix sort -> per-tile ranges -> front-to-back
    compositing. Training adds: L1/L2 loss -> back-to-front gradient pass with
-   float atomics -> chain rule to 3D parameters -> Adam.
+   float atomics -> chain rule to 3D parameters -> Adam. The key count never
+   leaves the GPU: sort and ranges are sized by indirect dispatch.
    Standalone: it creates its own GPUDevice and exchanges plain Float32Arrays.
    ========================================================================= */
 const SplatTrain = (() => {
@@ -25,7 +26,7 @@ struct Cam {
   dims: vec4<u32>,   // W H tilesX tilesY
   clip: vec4<f32>,   // near far sigmaTri deltaCvx
   misc: vec4<f32>,   // sigmaCvx bgR bgG bgB
-  cnt: vec4<u32>,    // N K depthBits cap
+  cnt: vec4<u32>,    // N - depthBits cap
 };`;
   function header(type) {
     return `${camStruct}
@@ -230,15 +231,23 @@ var<workgroup> s: array<u32, 512>;
   if (i1 < n) { data[i1] = data[i1] + add; }
 }`;
 
-  const totalWGSL = `
-@group(0) @binding(0) var<storage, read> offs: array<u32>;
-@group(0) @binding(1) var<storage, read> tiles: array<u32>;
-@group(0) @binding(2) var<storage, read_write> outv: array<u32>;
-@group(0) @binding(3) var<uniform> U: vec4<u32>;
+  /* key count -> sort size, kept on the GPU so a step never waits for a readback.
+     info: K (capped), K (raw), blocks of 256 keys, projections that overflowed the cap (sticky).
+     ind: dispatchWorkgroupsIndirect args covering those blocks (same 2D split as dispatchDims). */
+  const argsWGSL = `${camStruct}
+@group(0) @binding(0) var<uniform> cam: Cam;
+@group(0) @binding(1) var<storage, read> offs: array<u32>;
+@group(0) @binding(2) var<storage, read> tiles: array<u32>;
+@group(0) @binding(3) var<storage, read_write> info: array<u32>;
+@group(0) @binding(4) var<storage, read_write> ind: array<u32>;
 @compute @workgroup_size(1) fn main() {
-  let n = U.x;
-  if (n == 0u) { outv[0] = 0u; return; }
-  outv[0] = offs[n - 1u] + tiles[n - 1u];
+  let n = cam.cnt.x;
+  var total = 0u;
+  if (n > 0u) { total = offs[n - 1u] + tiles[n - 1u]; }
+  let K = min(total, cam.cnt.w); let nb = (K + 255u) / 256u;
+  info[0] = K; info[1] = total; info[2] = nb;
+  if (total > K) { info[3] = info[3] + 1u; }
+  ind[0] = min(nb, 65535u); ind[1] = (nb + 65534u) / 65535u; ind[2] = 1u;
 }`;
 
   const duplicateWGSL = type => `${header(type)}
@@ -263,34 +272,38 @@ var<workgroup> s: array<u32, 512>;
   }
 }`;
 
+  /* digit counts are stored digit-major with a fixed stride (blocks for the full key cap), so the
+     count scan has a fixed size; blocks past the live key count stay zero from the per-pass clear */
   const rsWGSL = `
-struct RS { n: u32, shift: u32, nb: u32, pad: u32 };
+struct RS { shift: u32, stride: u32, pad0: u32, pad1: u32 };
 @group(0) @binding(0) var<uniform> R: RS;
 @group(0) @binding(1) var<storage, read> kin: array<u32>;
 @group(0) @binding(2) var<storage, read_write> cnt: array<u32>;
+@group(0) @binding(3) var<storage, read> info: array<u32>;
 var<workgroup> h: array<atomic<u32>, 16>;
 @compute @workgroup_size(256) fn main(@builtin(local_invocation_id) l: vec3<u32>, @builtin(workgroup_id) w: vec3<u32>) {
   let blk = w.x + w.y * 65535u;
   if (l.x < 16u) { atomicStore(&h[l.x], 0u); }
   workgroupBarrier();
   let i = blk * 256u + l.x;
-  if (i < R.n) { atomicAdd(&h[(kin[i] >> R.shift) & 15u], 1u); }
+  if (i < info[0]) { atomicAdd(&h[(kin[i] >> R.shift) & 15u], 1u); }
   workgroupBarrier();
-  if (l.x < 16u && blk < R.nb) { cnt[l.x * R.nb + blk] = atomicLoad(&h[l.x]); }
+  if (l.x < 16u && blk < info[2]) { cnt[l.x * R.stride + blk] = atomicLoad(&h[l.x]); }
 }`;
   const rsScatterWGSL = `
-struct RS { n: u32, shift: u32, nb: u32, pad: u32 };
+struct RS { shift: u32, stride: u32, pad0: u32, pad1: u32 };
 @group(0) @binding(0) var<uniform> R: RS;
 @group(0) @binding(1) var<storage, read> kin: array<u32>;
 @group(0) @binding(2) var<storage, read> vin: array<u32>;
 @group(0) @binding(3) var<storage, read_write> kout: array<u32>;
 @group(0) @binding(4) var<storage, read_write> vout: array<u32>;
 @group(0) @binding(5) var<storage, read> cnt: array<u32>;
+@group(0) @binding(6) var<storage, read> info: array<u32>;
 var<workgroup> sc: array<u32, 256>;
 @compute @workgroup_size(256) fn main(@builtin(local_invocation_id) l: vec3<u32>, @builtin(workgroup_id) w: vec3<u32>) {
   let blk = w.x + w.y * 65535u;
   let i = blk * 256u + l.x;
-  let valid = i < R.n;
+  let valid = i < info[0];
   var k = 0u; var v = 0u;
   if (valid) { k = kin[i]; v = vin[i]; }
   let d = (k >> R.shift) & 15u;
@@ -309,15 +322,16 @@ var<workgroup> sc: array<u32, 256>;
     if (f == 1u) { rank = sc[l.x] - 1u; }
     workgroupBarrier();
   }
-  if (valid) { let dst = cnt[d * R.nb + blk] + rank; kout[dst] = k; vout[dst] = v; }
+  if (valid) { let dst = cnt[d * R.stride + blk] + rank; kout[dst] = k; vout[dst] = v; }
 }`;
 
   const rangesWGSL = `${camStruct}
 @group(0) @binding(0) var<uniform> cam: Cam;
 @group(0) @binding(1) var<storage, read> keys: array<u32>;
 @group(0) @binding(2) var<storage, read_write> ranges: array<u32>;
+@group(0) @binding(3) var<storage, read> info: array<u32>;
 @compute @workgroup_size(256) fn main(@builtin(global_invocation_id) g: vec3<u32>) {
-  let i = g.x + g.y * 65535u * 256u; let K = cam.cnt.y; let db = cam.cnt.z;
+  let i = g.x + g.y * 65535u * 256u; let K = info[0]; let db = cam.cnt.z;
   if (i >= K) { return; }
   let tile = keys[i] >> db;
   if (i == 0u) { ranges[2u * tile] = 0u; }
@@ -785,7 +799,7 @@ const OPP: u32 = ${[13, 12, 21][type]}u;
       adam: mk(adamWGSL(type), "main", "adam" + type),
       scanBlock: dev.createComputePipeline({ layout: "auto", compute: { module: scanMod, entryPoint: "scanBlock" } }),
       addSums: dev.createComputePipeline({ layout: "auto", compute: { module: scanMod, entryPoint: "addSums" } }),
-      total: mk(totalWGSL, "main", "total"), rsCount: mk(rsWGSL, "main", "rsCount"), rsScatter: mk(rsScatterWGSL, "main", "rsScatter"),
+      args: mk(argsWGSL, "main", "args"), rsCount: mk(rsWGSL, "main", "rsCount"), rsScatter: mk(rsScatterWGSL, "main", "rsScatter"),
       ranges: mk(rangesWGSL, "main", "ranges"), pack: mk(packWGSL, "main", "pack"), loss: mk(lossWGSL, "main", "loss"),
     };
     byType[type] = p;
@@ -809,13 +823,13 @@ const OPP: u32 = ${[13, 12, 21][type]}u;
       this.J = buf(dev, N * JSz * 4, S, "proj");
       this.tiles = buf(dev, N * 4, S | Sr, "tiles");
       this.offs = buf(dev, N * 4, S | D, "offs");
-      this.countU = buf(dev, 16, U.UNIFORM | D, "countU");
-      this.counter = buf(dev, 16, S | Sr, "counter");
+      this.info = buf(dev, 16, S | Sr, "keyInfo");
+      this.ind = buf(dev, 16, S | U.INDIRECT, "sortDispatch");
       this.stage = buf(dev, 16, U.MAP_READ | D, "stage");
       this.keysA = buf(dev, this.cap * 4, S, "keysA"); this.valsA = buf(dev, this.cap * 4, S, "valsA");
       this.keysB = buf(dev, this.cap * 4, S, "keysB"); this.valsB = buf(dev, this.cap * 4, S, "valsB");
-      const nbMax = Math.ceil(this.cap / 256);
-      this.cnt = buf(dev, 16 * nbMax * 4, S, "rsCnt");
+      const nbMax = this.nbMax = Math.ceil(this.cap / 256);
+      this.cnt = buf(dev, 16 * nbMax * 4, S | D, "rsCnt");
       this.ranges = buf(dev, nt * 2 * 4, S | D, "ranges");
       this.img = buf(dev, W * H * 16, S | Sr, "img");
       this.tfin = buf(dev, W * H * 4, S, "tfin");
@@ -823,13 +837,15 @@ const OPP: u32 = ${[13, 12, 21][type]}u;
       this.imgStage = buf(dev, W * H * 16, U.MAP_READ | D, "imgStage");
       this.scanTiles = new Scan(dev, this.pipes, this.offs, N);
       this.scanCnt = new Scan(dev, this.pipes, this.cnt, 16 * nbMax);
-      this.rsU = Array.from({ length: 8 }, () => buf(dev, 16, U.UNIFORM | D, "rsU"));
+      this.rsU = Array.from({ length: 8 }, (_, pass) => {
+        const b = buf(dev, 16, U.UNIFORM | D, "rsU"); dev.queue.writeBuffer(b, 0, new Uint32Array([pass * 4, nbMax, 0, 0])); return b;
+      });
       const p = this.pipes;
       this.bg = {
         project: bindAll(dev, p.project, [this.cam, this.P, this.J, this.tiles]),
-        total: bindAll(dev, p.total, [this.offs, this.tiles, this.counter, this.countU]),
+        args: bindAll(dev, p.args, [this.cam, this.offs, this.tiles, this.info, this.ind]),
         duplicate: bindAll(dev, p.duplicate, [this.cam, this.J, this.tiles, this.offs, this.keysA, this.valsA]),
-        ranges: bindAll(dev, p.ranges, [this.cam, this.keysA, this.ranges]),
+        ranges: bindAll(dev, p.ranges, [this.cam, this.keysA, this.ranges, this.info]),
         render: bindAll(dev, p.render, [this.cam, this.J, this.valsA, this.ranges, this.img, this.tfin, this.lastc]),
       };
       // radix uniforms differ per pass: build per-pass bind groups
@@ -837,8 +853,8 @@ const OPP: u32 = ${[13, 12, 21][type]}u;
       for (let pass = 0; pass < 8; pass++) {
         const src = pass % 2 === 0 ? [this.keysA, this.valsA] : [this.keysB, this.valsB];
         const dst = pass % 2 === 0 ? [this.keysB, this.valsB] : [this.keysA, this.valsA];
-        this.bg.rsCount.push(bindAll(dev, p.rsCount, [this.rsU[pass], src[0], this.cnt]));
-        this.bg.rsScatter.push(bindAll(dev, p.rsScatter, [this.rsU[pass], src[0], src[1], dst[0], dst[1], this.cnt]));
+        this.bg.rsCount.push(bindAll(dev, p.rsCount, [this.rsU[pass], src[0], this.cnt, this.info]));
+        this.bg.rsScatter.push(bindAll(dev, p.rsScatter, [this.rsU[pass], src[0], src[1], dst[0], dst[1], this.cnt, this.info]));
       }
       if (train) {
         this.dLdC = buf(dev, W * H * 16, S, "dLdC");
@@ -856,58 +872,46 @@ const OPP: u32 = ${[13, 12, 21][type]}u;
       }
       this.sigmaTri = 1; this.deltaCvx = 6; this.sigmaCvx = 18; this.bg3 = [0.059, 0.071, 0.086];
     }
-    setCamera(cam, K = 0) {
+    setCamera(cam) {
       const a = new ArrayBuffer(CAM_BYTES), f = new Float32Array(a), u = new Uint32Array(a);
       f.set(cam.view, 0);
       f[16] = cam.fx; f[17] = cam.fy; f[18] = cam.cx; f[19] = cam.cy;
       u[20] = this.W; u[21] = this.H; u[22] = this.tilesX; u[23] = this.tilesY;
       f[24] = cam.near; f[25] = cam.far; f[26] = this.sigmaTri; f[27] = this.deltaCvx;
       f[28] = this.sigmaCvx; f[29] = this.bg3[0]; f[30] = this.bg3[1]; f[31] = this.bg3[2];
-      u[32] = this.N; u[33] = K; u[34] = this.depthBits; u[35] = this.cap;
+      u[32] = this.N; u[33] = 0; u[34] = this.depthBits; u[35] = this.cap;
       this.dev.queue.writeBuffer(this.cam, 0, a);
-      this._camData = cam;
     }
     setParams(params) { this.dev.queue.writeBuffer(this.P, 0, params); }
-    /* phase 1: project + count; returns the key count */
-    async project(cam) {
-      this.setCamera(cam, 0);
-      const dev = this.dev, enc = dev.createCommandEncoder();
-      dev.queue.writeBuffer(this.countU, 0, new Uint32Array([this.N, 0, 0, 0]));
+    /* phase 1: project, count tile overlaps, size the sort on the GPU (encodes into enc) */
+    encodeProject(enc, cam) {
+      this.setCamera(cam);
       let p = enc.beginComputePass(); p.setPipeline(this.pipes.project); p.setBindGroup(0, this.bg.project); p.dispatchWorkgroups(...dispatchDims(Math.ceil(this.N / 256))); p.end();
       enc.copyBufferToBuffer(this.tiles, 0, this.offs, 0, this.N * 4);
       this.scanTiles.encode(enc, this.N);
-      p = enc.beginComputePass(); p.setPipeline(this.pipes.total); p.setBindGroup(0, this.bg.total); p.dispatchWorkgroups(1); p.end();
-      enc.copyBufferToBuffer(this.counter, 0, this.stage, 0, 4);
-      dev.queue.submit([enc.finish()]);
-      await this.stage.mapAsync(GPUMapMode.READ);
-      const K = new Uint32Array(this.stage.getMappedRange().slice(0))[0];
-      this.stage.unmap();
-      this.K = Math.min(K, this.cap); this.Kraw = K;
-      return this.K;
+      p = enc.beginComputePass(); p.setPipeline(this.pipes.args); p.setBindGroup(0, this.bg.args); p.dispatchWorkgroups(1); p.end();
     }
-    /* phase 2: sort + rasterize (encodes into enc) */
+    /* phase 2: sort + rasterize (encodes into enc); sort and ranges are sized by indirect dispatch */
     encodeRaster(enc) {
-      const dev = this.dev, K = this.K;
-      this.setCamera(this._camData, K);
       enc.clearBuffer(this.ranges);
-      if (K === 0) {
-        const p = enc.beginComputePass(); p.setPipeline(this.pipes.render); p.setBindGroup(0, this.bg.render); p.dispatchWorkgroups(this.tilesX, this.tilesY); p.end();
-        return;
-      }
       let p = enc.beginComputePass(); p.setPipeline(this.pipes.duplicate); p.setBindGroup(0, this.bg.duplicate); p.dispatchWorkgroups(...dispatchDims(Math.ceil(this.N / 256))); p.end();
-      const nb = Math.ceil(K / 256);
       for (let pass = 0; pass < 8; pass++) {
-        dev.queue.writeBuffer(this.rsU[pass], 0, new Uint32Array([K, pass * 4, nb, 0]));
-        p = enc.beginComputePass(); p.setPipeline(this.pipes.rsCount); p.setBindGroup(0, this.bg.rsCount[pass]); p.dispatchWorkgroups(...dispatchDims(nb)); p.end();
-        this.scanCnt.encode(enc, 16 * nb);
-        p = enc.beginComputePass(); p.setPipeline(this.pipes.rsScatter); p.setBindGroup(0, this.bg.rsScatter[pass]); p.dispatchWorkgroups(...dispatchDims(nb)); p.end();
+        enc.clearBuffer(this.cnt);
+        p = enc.beginComputePass(); p.setPipeline(this.pipes.rsCount); p.setBindGroup(0, this.bg.rsCount[pass]); p.dispatchWorkgroupsIndirect(this.ind, 0); p.end();
+        this.scanCnt.encode(enc, 16 * this.nbMax);
+        p = enc.beginComputePass(); p.setPipeline(this.pipes.rsScatter); p.setBindGroup(0, this.bg.rsScatter[pass]); p.dispatchWorkgroupsIndirect(this.ind, 0); p.end();
       }
-      p = enc.beginComputePass(); p.setPipeline(this.pipes.ranges); p.setBindGroup(0, this.bg.ranges); p.dispatchWorkgroups(...dispatchDims(Math.ceil(K / 256))); p.end();
+      p = enc.beginComputePass(); p.setPipeline(this.pipes.ranges); p.setBindGroup(0, this.bg.ranges); p.dispatchWorkgroupsIndirect(this.ind, 0); p.end();
       p = enc.beginComputePass(); p.setPipeline(this.pipes.render); p.setBindGroup(0, this.bg.render); p.dispatchWorkgroups(this.tilesX, this.tilesY); p.end();
     }
-    async render(cam) {
-      await this.project(cam);
-      const enc = this.dev.createCommandEncoder(); this.encodeRaster(enc); this.dev.queue.submit([enc.finish()]);
+    render(cam) {
+      const enc = this.dev.createCommandEncoder(); this.encodeProject(enc, cam); this.encodeRaster(enc); this.dev.queue.submit([enc.finish()]);
+    }
+    /* key counts of the last projection, for diagnostics; rendering and training never wait on this */
+    async readKeyInfo() {
+      const enc = this.dev.createCommandEncoder(); enc.copyBufferToBuffer(this.info, 0, this.stage, 0, 16); this.dev.queue.submit([enc.finish()]);
+      await this.stage.mapAsync(GPUMapMode.READ); const v = new Uint32Array(this.stage.getMappedRange().slice(0)); this.stage.unmap();
+      return { K: v[0], Kraw: v[1], overflows: v[3] };
     }
     async readImage() {
       const enc = this.dev.createCommandEncoder(); enc.copyBufferToBuffer(this.img, 0, this.imgStage, 0, this.W * this.H * 16); this.dev.queue.submit([enc.finish()]);
@@ -921,11 +925,10 @@ const OPP: u32 = ${[13, 12, 21][type]}u;
       await st.mapAsync(GPUMapMode.READ); const out = new Float32Array(st.getMappedRange().slice(0)); st.unmap(); st.destroy();
       return out;
     }
-    /* one optimization step against gt image `view` (index into gtBuf) */
-    async step(cam, gtBuf, viewIdx, adamParams) {
-      const dev = this.dev;
-      await this.project(cam);
-      const enc = dev.createCommandEncoder();
+    /* one optimization step against gt image `viewIdx` of gtBuf; encodes and submits without waiting */
+    step(cam, gtBuf, viewIdx, adamParams) {
+      const dev = this.dev, enc = dev.createCommandEncoder();
+      this.encodeProject(enc, cam);
       this.encodeRaster(enc);
       if (!this._lossBG || this._lossGT !== gtBuf) { this._lossBG = bindAll(dev, this.pipes.loss, [this.cam, this.img, gtBuf, this.dLdC, this.lossv, this.lossU]); this._lossGT = gtBuf; }
       dev.queue.writeBuffer(this.lossU, 0, new Uint32Array([viewIdx * this.W * this.H, 0, 0, 0]));
@@ -1044,18 +1047,16 @@ const OPP: u32 = ${[13, 12, 21][type]}u;
       this.gt = dev.createBuffer({ size: numViews * W * H * 4, usage: U.STORAGE | U.COPY_SRC });
       const T = new Raster(dev, 0, nTeacher, W, H, { keyCap: Math.max(1 << 20, nTeacher * 4) });
       T.setParams(teacherParams);
-      let dropped = 0;
       for (let v = 0; v < numViews; v++) {
         if (isStale()) { T.destroy(); throw new Error("stale"); }
-        await T.project(this.views[v]);
-        if (T.Kraw > T.K) dropped++;
-        const enc = dev.createCommandEncoder(); T.encodeRaster(enc); T.encodePack(enc, this.gt, v); dev.queue.submit([enc.finish()]);
+        const enc = dev.createCommandEncoder(); T.encodeProject(enc, this.views[v]); T.encodeRaster(enc); T.encodePack(enc, this.gt, v); dev.queue.submit([enc.finish()]);
         await dev.queue.onSubmittedWorkDone();
         onProgress((v + 1) / numViews);
       }
       this.preview = await T.readImage();
+      const { overflows } = await T.readKeyInfo();
       T.destroy();
-      return { dropped };
+      return { dropped: overflows };
     }
     async readTeacher(v) {
       const st = this.dev.createBuffer({ size: this.W * this.H * 4, usage: U.MAP_READ | U.COPY_DST });
@@ -1079,7 +1080,8 @@ const OPP: u32 = ${[13, 12, 21][type]}u;
       const ab = new ArrayBuffer(128), af = new Float32Array(ab), au = new Uint32Array(ab);
       const relocEvery = 250, relocStop = Math.floor(steps * (opaqueFinish ? 0.55 : 0.7));
       const opaqueStart = Math.floor(steps * 0.65);
-      let lossAcc = 0, lossN = 0, t0 = performance.now();
+      let lossFrom = 0, t0 = performance.now();
+      const inflight = [];
       for (let step = 1; step <= steps; step++) {
         if (isStale()) break;
         const prog = step / steps;
@@ -1095,11 +1097,14 @@ const OPP: u32 = ${[13, 12, 21][type]}u;
         af[24] = 0.9; af[25] = 0.999; af[26] = 1e-12; af[27] = opFloor;
         au[28] = n; au[29] = step; au[30] = 0; au[31] = 0;
         const vi = (Math.random() * this.views.length) | 0;
-        await R.step(this.views[vi], this.gt, vi, af);
-        if (step % 25 === 0) { lossAcc += await R.readLoss(); lossN += 25; }
+        R.step(this.views[vi], this.gt, vi, af);
+        // keep a few steps queued so the GPU never idles waiting for JS, without letting the queue grow unbounded
+        inflight.push(dev.queue.onSubmittedWorkDone());
+        if (inflight.length > 3) await inflight.shift();
         if (step % 100 === 0 || step === steps) {
-          onProgress({ step, steps, loss: lossN ? lossAcc / lossN : NaN, ms: performance.now() - t0, sigmaTri: R.sigmaTri });
-          lossAcc = 0; lossN = 0;
+          // the loss buffer sums per-step losses on the GPU; one readback per report
+          const loss = await R.readLoss() / (step - lossFrom); lossFrom = step;
+          onProgress({ step, steps, loss, ms: performance.now() - t0, sigmaTri: R.sigmaTri });
         }
         if (step % relocEvery === 0 && step <= relocStop) await this.relocate(R, type, n);
         if (step % snapshotEvery === 0 && step < steps) onSnapshot(await R.readBuffer(R.P, n * PS * 4), { step, sigmaTri: R.sigmaTri, final: false });
