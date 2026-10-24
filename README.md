@@ -50,7 +50,7 @@ This is a research playground, not a production renderer. Open questions and goo
 
 - **Benchmarked on one GPU so far.** On an RTX 5080 at the defaults (3,000 steps, 256², 64 views), training runs at about 137 steps/s for 200k Gaussians, 280 for 120k triangles and 77 for 60k convexes, so a default run takes 11–40 seconds. Numbers from other GPUs (`tests/bench.html`) and screenshots are very welcome.
 - **View-independent color** (no spherical harmonics) and a plain L1/L2 loss (no D-SSIM).
-- **Memory caps** on training: 800k Gaussians, 400k triangles, 250k convexes.
+- **Memory caps** on training: 800k Gaussians, 400k triangles, 250k convexes. Train lowers a larger count to the cap (a loaded mesh shows 2M Gaussians by default).
 - **Convex training** treats hull membership as fixed per step (as the paper does); gradients are approximate where points cross the hull.
 - The GaussianSplattingMesh point mode is Babylon's code; issues there belong upstream.
 

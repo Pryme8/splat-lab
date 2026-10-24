@@ -1803,8 +1803,9 @@ async function startTraining() {
   if (!navigator.gpu) { setTrainStatus("Training needs WebGPU, which this browser doesn't provide.", true); return; }
   if (!state.source) return;
   const mode = state.mode, m = MODES[mode], type = m.type;
-  const limit = [800000, 400000, 250000][type];
-  if (state.count[mode] > limit) { setTrainStatus(`Training is capped at ${limit.toLocaleString()} ${m.noun} to stay within GPU memory. Lower the count and train again.`, true); return; }
+  // GPU-memory limit per type; larger counts (a loaded mesh starts at 2M Gaussians) are lowered, not refused
+  const limit = [800000, 400000, 250000][type], lowered = state.count[mode] > limit;
+  if (lowered) { state.count[mode] = limit; renderPanel(); }
   const token = ++train.token, stale = () => token !== train.token;
   train.running = true; train.history = []; drawLoss(); renderTrainBlock();
   try {
@@ -1846,7 +1847,7 @@ async function startTraining() {
     });
     if (stale()) throw new Error("stale");
     const h = train.history, first = h.length ? h[0][1] : NaN, last = h.length ? h[h.length - 1][1] : NaN;
-    setTrainStatus(`Trained ${Sst.n.toLocaleString()} ${m.noun} in ${fmtTime(performance.now() - t0)}. Loss ${first.toFixed(4)} → ${last.toFixed(4)}.${opaqueFinish ? " Triangles are now opaque and drawn as a plain mesh." : ""}`);
+    setTrainStatus(`Trained ${Sst.n.toLocaleString()} ${m.noun} in ${fmtTime(performance.now() - t0)}. Loss ${first.toFixed(4)} → ${last.toFixed(4)}.${opaqueFinish ? " Triangles are now opaque and drawn as a plain mesh." : ""}${lowered ? ` The count was lowered to ${limit.toLocaleString()}, the training limit for GPU memory.` : ""}`);
   } catch (e) {
     if (e.message === "stale") setTrainStatus("Training stopped. The last snapshot stays on screen.");
     else { setTrainStatus("Training failed: " + e.message, true); console.error(e); }
