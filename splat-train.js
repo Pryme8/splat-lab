@@ -490,7 +490,8 @@ fn atomicAddF(idx: u32, v: f32) {
       let phi = m + log(acc) / dl;
       let I = 1.0 / (1.0 + exp(sg * phi));
       let gphi = q[OPI] * dLda * (-sg * I * (1.0 - I));
-      var gSz = 0.0;
+      // accumulate per input point (hull vertex j is point ij), then add every slot once
+      var gv: array<vec2f, 6>; var gSz = 0.0;
       for (var j = 0u; j < n; j++) {
         if (L[j] < -1e8) { continue; }
         let k = select(j + 1u, 0u, j + 1u == n);
@@ -502,12 +503,15 @@ fn atomicAddF(idx: u32, v: f32) {
         let gP = f * (vec2f(e.y - u.y, u.x - e.x) / len + c * e / (len * len * len));
         let gQ = f * (vec2f(u.y, -u.x) / len - c * e / (len * len * len));
         let ij = (packed >> (3u * j)) & 7u; let ik = (packed >> (3u * k)) & 7u;
-        add(gb + 2u * ij, gL * gP.x); add(gb + 2u * ij + 1u, gL * gP.y);
-        add(gb + 2u * ik, gL * gQ.x); add(gb + 2u * ik + 1u, gL * gQ.y);
+        gv[ij] += gL * gP; gv[ik] += gL * gQ;
       }
-      add(gb + 16u, gSz);
+      for (var k = 0u; k < 6u; k++) { add(gb + 2u * k, gv[k].x); add(gb + 2u * k + 1u, gv[k].y); }
       add(gb + 12u, I * dLda);
-      add(gb + 13u, gcol.x); add(gb + 14u, gcol.y); add(gb + 15u, gcol.z);`];
+      add(gb + 13u, gcol.x); add(gb + 14u, gcol.y); add(gb + 15u, gcol.z);
+      add(gb + 16u, gSz);`];
+  /* Gradients are accumulated per batch in workgroup memory (acc, one GS-float record per batch slot) and
+     flushed to G2 by all threads in parallel at the end of each batch. Adding straight into G2 made every
+     warp wait out 9-17 dependent global compare-exchange round trips per primitive, which dominated the step. */
   const backwardWGSL = type => `${header(type)}
 @group(0) @binding(0) var<uniform> cam: Cam;
 @group(0) @binding(1) var<storage, read> J: array<f32>;
@@ -519,15 +523,27 @@ fn atomicAddF(idx: u32, v: f32) {
 @group(0) @binding(7) var<storage, read_write> G2: array<atomic<u32>>;
 var<workgroup> sh: array<array<f32, JS>, ${BATCH}>;
 var<workgroup> shid: array<u32, ${BATCH}>;
-fn add(idx: u32, v: f32) {
-  if (v == 0.0 || v != v) { return; }
+var<workgroup> acc: array<atomic<u32>, ${BATCH}u * GS>;
+fn addGlobal(idx: u32, v: f32) {
   var old = atomicLoad(&G2[idx]);
   loop {
-    let nv = bitcast<u32>(bitcast<f32>(old) + v);
-    let r = atomicCompareExchangeWeak(&G2[idx], old, nv);
+    let r = atomicCompareExchangeWeak(&G2[idx], old, bitcast<u32>(bitcast<f32>(old) + v));
     if (r.exchanged) { break; }
     old = r.old_value;
   }
+}
+fn addShared(idx: u32, v: f32) {
+  var old = atomicLoad(&acc[idx]);
+  loop {
+    let r = atomicCompareExchangeWeak(&acc[idx], old, bitcast<u32>(bitcast<f32>(old) + v));
+    if (r.exchanged) { break; }
+    old = r.old_value;
+  }
+}
+/* idx: batch slot * GS + gradient slot */
+fn add(idx: u32, v: f32) {
+  if (v == 0.0 || v != v) { return; }
+  addShared(idx, v);
 }
 ${windowFns[type]}
 @compute @workgroup_size(16, 16) fn main(@builtin(workgroup_id) w: vec3<u32>, @builtin(local_invocation_id) l: vec3<u32>, @builtin(local_invocation_index) li: u32) {
@@ -572,8 +588,14 @@ ${windowFns[type]}
       lastA = a; lastCol = col;
       var dLda = dot(col - accum, dpix) * T + (-Tfin / (1.0 - a)) * bgdot;
       if (araw > 0.99) { dLda = 0.0; }
-      let gb = shid[j] * GS;
+      let gb = j * GS;
 ${backPixel[type]}
+    }
+    // flush this batch's gradients, spread over all threads; also resets acc for the next batch
+    workgroupBarrier();
+    for (var e = li; e < cnt * GS; e += 256u) {
+      let v = bitcast<f32>(atomicExchange(&acc[e], 0u));
+      if (v != 0.0) { addGlobal(shid[e / GS] * GS + e % GS, v); }
     }
   }
 }`;
@@ -733,12 +755,14 @@ const OPP: u32 = ${[13, 12, 21][type]}u;
 }`;
 
   /* ---------------------------------------------------------------- JS */
-  async function createDevice() {
+  /* timestamps: request timestamp-query for profiling (tests/bench.html) */
+  async function createDevice({ timestamps = false } = {}) {
     if (!navigator.gpu) throw new Error("WebGPU is not available in this browser.");
     const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
     if (!adapter) throw new Error("No WebGPU adapter was found.");
     const lim = adapter.limits;
-    return adapter.requestDevice({ requiredLimits: {
+    const requiredFeatures = timestamps && adapter.features.has("timestamp-query") ? ["timestamp-query"] : [];
+    return adapter.requestDevice({ requiredFeatures, requiredLimits: {
       maxStorageBufferBindingSize: lim.maxStorageBufferBindingSize, maxBufferSize: lim.maxBufferSize,
       maxStorageBuffersPerShaderStage: Math.min(10, lim.maxStorageBuffersPerShaderStage),
       maxComputeWorkgroupStorageSize: lim.maxComputeWorkgroupStorageSize,
